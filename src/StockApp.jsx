@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   Package, TrendingUp, Users, AlertTriangle, Plus, Minus, LogOut,
-  Church, Wallet, FileText, ChevronRight, Box, X, Check, Delete, RefreshCw, Search
+  Church, Wallet, FileText, ChevronRight, Box, X, Check, Delete, RefreshCw, Search, Pencil
 } from "lucide-react";
 
 // ============================================================
@@ -361,6 +361,7 @@ function SellModal({ product, onClose, onConfirm }) {
 // ============================================================
 function StockManager({ products, onChange }) {
   const [open, setOpen] = useState(false);
+  const [editing, setEditing] = useState(null); // product being edited
   const [search, setSearch] = useState("");
   const [f, setF] = useState({ name: "", price: "", pct: "", packs: "", units: "", pack_size: "1", low: "5" });
   const [busy, setBusy] = useState(false);
@@ -380,6 +381,11 @@ function StockManager({ products, onChange }) {
       setOpen(false); await onChange();
     } catch (e) { alert(e.message); }
     setBusy(false);
+  };
+  const saveEdit = async (id, fields) => {
+    await sb.patch("products", `id=eq.${id}`, fields);
+    setEditing(null);
+    await onChange();
   };
   const restock = async (p, units) => {
     await sb.patch("products", `id=eq.${p.id}`, { qty: Math.max(0, p.qty + units) });
@@ -424,7 +430,10 @@ function StockManager({ products, onChange }) {
                   <button style={S.qtyBtn} onClick={() => restock(p, 1)}><Plus size={13} /></button>
                 </div>
               </div>
-              <button style={S.delBtn} onClick={() => remove(p.id)}><X size={16} /></button>
+              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                <button style={S.editBtn} onClick={() => setEditing(p)}><Pencil size={15} /></button>
+                <button style={S.delBtn} onClick={() => remove(p.id)}><X size={16} /></button>
+              </div>
             </div>
           );
         })}
@@ -445,12 +454,47 @@ function StockManager({ products, onChange }) {
           </button>
         </Modal>
       )}
+      {editing && <EditProductModal product={editing} onClose={() => setEditing(null)} onSave={saveEdit} />}
     </>
   );
 }
 
-// ============================================================
-// 8. REPORT (admin)
+// Edit price, percentage, pack size, name, low-stock level
+function EditProductModal({ product, onClose, onSave }) {
+  const [name, setName] = useState(product.name);
+  const [price, setPrice] = useState(String(product.price));
+  const [pct, setPct] = useState(String(product.tithe_pct));
+  const [packSize, setPackSize] = useState(String(product.pack_size || 1));
+  const [low, setLow] = useState(String(product.low_at));
+  const [busy, setBusy] = useState(false);
+
+  const save = async () => {
+    if (!name.trim()) return;
+    setBusy(true);
+    await onSave(product.id, {
+      name: name.trim(),
+      price: parseFloat(price) || 0,
+      tithe_pct: parseFloat(pct) || 0,
+      pack_size: parseInt(packSize) || 1,
+      low_at: parseInt(low) || 5,
+    });
+    setBusy(false);
+  };
+
+  return (
+    <Modal onClose={onClose} title="Edit product">
+      <Field label="Product name" value={name} onChange={setName} />
+      <Field label="Selling price per unit ($)" value={price} onChange={setPrice} type="number" />
+      <Field label="Church percentage (%)" value={pct} onChange={setPct} type="number" />
+      <Field label="Units per pack / carton" value={packSize} onChange={setPackSize} type="number" />
+      <Field label="Warn me when units drop to" value={low} onChange={setLow} type="number" />
+      <p style={{ ...S.hint, marginBottom: 4 }}>To change quantity, use the + / − buttons on the stock list.</p>
+      <button style={{ ...S.btn, ...S.btnDark, width: "100%", marginTop: 4 }} disabled={busy} onClick={save}>
+        <Check size={18} /> {busy ? "Saving…" : "Save changes"}
+      </button>
+    </Modal>
+  );
+}
 // ============================================================
 function Report({ sales, totalSales, totalTithe, cash, low }) {
   const byProduct = {};
@@ -717,6 +761,7 @@ const S = {
   qtyBtn: { width: 30, height: 30, borderRadius: 8, border: `1px solid ${line}`, background: paper, display: "grid", placeItems: "center", cursor: "pointer", color: ink },
   qtyNum: { minWidth: 28, textAlign: "center", fontWeight: 800, fontSize: 16 },
   delBtn: { background: "transparent", border: "none", color: "#C0392B", cursor: "pointer", padding: 4, display: "grid", placeItems: "center" },
+  editBtn: { background: "transparent", border: "none", color: "#3A7D5C", cursor: "pointer", padding: 4, display: "grid", placeItems: "center" },
 
   sellBtn: { background: accent, color: "#fff", border: "none", padding: "10px 16px", borderRadius: 10, fontWeight: 700, fontSize: 14, cursor: "pointer" },
   sellBtnOff: { background: "#D9D3C4", color: "#fff", cursor: "not-allowed" },
