@@ -288,12 +288,12 @@ function Admin({ user, onExit, businessName }) {
             <div style={S.statGrid}>
               <Stat icon={<TrendingUp size={16} />} label="Total sales" value={money(totalSales)} accent delay={0} />
               <Stat icon={<Wallet size={16} />} label="Cash in hand" value={money(cash)} tint={mango} delay={0.05} />
-              <Stat icon={<Church size={16} />} label="Church (tithe)" value={money(totalTithe)} tint={grape} delay={0.1} />
+              <Stat icon={<Church size={16} />} label="To God" value={money(totalTithe)} tint={grape} delay={0.1} />
               <Stat icon={<Package size={16} />} label="Items in stock" value={products.reduce((a,p)=>a+p.qty,0)} tint={sky} delay={0.15} />
             </div>
             <SectionTitle>Recent sales</SectionTitle>
             <p style={S.hint}>Tap the ✕ to remove a sale — its stock is returned automatically.</p>
-            <SalesList sales={sales.slice(0,20)} showSeller onDelete={deleteSale} />
+            <SalesList sales={sales.slice(0,20)} showSeller onDelete={deleteSale} showTithe />
           </>}
           {tab === "stock" && <StockManager products={products} onChange={refresh} businessId={user.business_id} />}
           {tab === "report" && <Report sales={sales} totalSales={totalSales} totalTithe={totalTithe} cash={cash} low={low} />}
@@ -638,7 +638,7 @@ function StockManager({ products, onChange, businessId }) {
             <div key={p.id} style={S.card}>
               <div style={{ flex: 1 }}>
                 <div style={S.cardName}>{p.name} {p.qty <= p.low_at && <span style={S.lowTag}>low</span>}</div>
-                <div style={S.cardMeta}>{priceFmt(p.price)}/unit · {p.tithe_pct}% church · pack of {ps}</div>
+                <div style={S.cardMeta}>{priceFmt(p.price)}/unit · {p.tithe_pct}% to God · pack of {ps}</div>
                 <div style={{ ...S.cardMeta, color: "#3A7D5C", fontWeight: 600 }}>{stockLabel(p)}</div>
               </div>
               <div style={S.qtyCol}>
@@ -668,7 +668,7 @@ function StockManager({ products, onChange, businessId }) {
           <Field label="Product name" value={f.name} onChange={(v)=>setF({...f,name:v})} placeholder="e.g. Maputi snack" />
           <Field label="Selling price per unit ($)" value={f.price} onChange={(v)=>setF({...f,price:v})} type="number" placeholder="1.50" />
           <Field label="Units per pack / carton" value={f.pack_size} onChange={(v)=>setF({...f,pack_size:v})} type="number" placeholder="20" />
-          <Field label="Church percentage (%)" value={f.pct} onChange={(v)=>setF({...f,pct:v})} type="number" placeholder="10" />
+          <Field label="Percentage to God (%)" value={f.pct} onChange={(v)=>setF({...f,pct:v})} type="number" placeholder="10" />
           <div style={{ display: "flex", gap: 10 }}>
             <Field label="Opening packs" value={f.packs} onChange={(v)=>setF({...f,packs:v})} type="number" placeholder="0" />
             <Field label="Opening units" value={f.units} onChange={(v)=>setF({...f,units:v})} type="number" placeholder="0" />
@@ -710,7 +710,7 @@ function EditProductModal({ product, onClose, onSave }) {
     <Modal onClose={onClose} title="Edit product">
       <Field label="Product name" value={name} onChange={setName} />
       <Field label="Selling price per unit ($)" value={price} onChange={setPrice} type="number" />
-      <Field label="Church percentage (%)" value={pct} onChange={setPct} type="number" />
+      <Field label="Percentage to God (%)" value={pct} onChange={setPct} type="number" />
       <Field label="Units per pack / carton" value={packSize} onChange={setPackSize} type="number" />
       <Field label="Warn me when units drop to" value={low} onChange={setLow} type="number" />
       <p style={{ ...S.hint, marginBottom: 4 }}>To change quantity, use the + / − buttons on the stock list.</p>
@@ -742,7 +742,7 @@ function Report({ sales, totalSales, totalTithe, cash, low }) {
       <div style={S.statGrid}>
         <Stat icon={<TrendingUp size={16} />} label="Total sales" value={money(totalSales)} accent delay={0} />
         <Stat icon={<Wallet size={16} />} label="Cash in hand" value={money(cash)} tint={mango} delay={0.05} />
-        <Stat icon={<Church size={16} />} label="Owed to church" value={money(totalTithe)} tint={grape} delay={0.1} />
+        <Stat icon={<Church size={16} />} label="Owed to God" value={money(totalTithe)} tint={grape} delay={0.1} />
         <Stat icon={<Package size={16} />} label="Units sold" value={Object.values(byProduct).reduce((a,p)=>a+p.qty,0)} tint={sky} delay={0.15} />
       </div>
       <SectionTitle>By product</SectionTitle>
@@ -752,7 +752,7 @@ function Report({ sales, totalSales, totalTithe, cash, low }) {
           <div key={name} style={S.card}>
             <div style={{ flex: 1 }}>
               <div style={S.cardName}>{name}</div>
-              <div style={S.cardMeta}>{d.qty} sold · {money(d.total)} · {money(d.tithe)} tithe</div>
+              <div style={S.cardMeta}>{d.qty} sold · {money(d.total)} · {money(d.tithe)} To God</div>
             </div>
           </div>
         ))}
@@ -864,7 +864,7 @@ function Stat({ icon, label, value, accent, tint, delay = 0 }) {
     </div>
   );
 }
-function SalesList({ sales, showSeller, onDelete }) {
+function SalesList({ sales, showSeller, onDelete, showTithe }) {
   if (!sales.length) return <p style={S.empty}>No sales yet.</p>;
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
@@ -880,7 +880,7 @@ function SalesList({ sales, showSeller, onDelete }) {
           </div>
           <div style={{ textAlign: "right" }}>
             <div style={S.saleName}>{money(s.total)}</div>
-            <div style={S.titheTag}>{money(s.tithe)} tithe</div>
+            {showTithe && <div style={S.titheTag}>{money(s.tithe)} To God</div>}
           </div>
           {onDelete && (
             <button style={S.delBtn} onClick={() => onDelete(s)} title="Remove this sale"><X size={16} /></button>
