@@ -257,7 +257,8 @@ function Admin({ user, onExit, businessName }) {
   const totalSales = sales.reduce((a, x) => a + Number(x.total), 0);
   const totalTithe = sales.reduce((a, x) => a + Number(x.tithe), 0);
   const cash = totalSales - totalTithe;
-  const low = products.filter((p) => p.qty <= p.low_at);
+  const low = products.filter((p) => p.qty <= p.low_at && p.qty > 0);
+  const out = products.filter((p) => p.qty <= 0);
 
   const deleteSale = async (s) => {
     const label = s.invoice_no ? `invoice ${s.invoice_no} (all its items)` : `this sale of ${s.product_name}`;
@@ -273,6 +274,12 @@ function Admin({ user, onExit, businessName }) {
     <div style={S.shell}>
       <Header title={businessName} sub={`${user.name} · Admin`} onExit={onExit} onRefresh={refresh} />
       {error && <div style={S.alert}><AlertTriangle size={16} /> {error}</div>}
+      {out.length > 0 && (
+        <div style={{ ...S.alert, background: "#FFE2E2", color: "#C0392B" }}>
+          <AlertTriangle size={16} />
+          <span><b>{out.length}</b> item{out.length > 1 ? "s have" : " has"} sold out (or oversold) — restock when you can.</span>
+        </div>
+      )}
       {low.length > 0 && (
         <div style={S.alert}>
           <AlertTriangle size={16} />
@@ -296,7 +303,7 @@ function Admin({ user, onExit, businessName }) {
             <SalesList sales={sales.slice(0,20)} showSeller onDelete={deleteSale} showTithe />
           </>}
           {tab === "stock" && <StockManager products={products} onChange={refresh} businessId={user.business_id} />}
-          {tab === "report" && <Report sales={sales} totalSales={totalSales} totalTithe={totalTithe} cash={cash} low={low} />}
+          {tab === "report" && <Report sales={sales} totalSales={totalSales} totalTithe={totalTithe} cash={cash} low={[...out, ...low]} />}
           {tab === "team" && <TeamManager onChange={refresh} businessId={user.business_id} />}
         </>}
       </div>
@@ -380,19 +387,18 @@ function Seller({ user, onExit, businessName }) {
             {products.length === 0 && <p style={S.empty}>No products yet. Ask the admin to add stock.</p>}
             {products.length > 0 && shown.length === 0 && <p style={S.empty}>No products match “{search}”.</p>}
             {shown.map((p) => {
-              const out = p.qty <= 0;
+              const low = p.qty <= 0;
               const inCart = cart.find((c) => c.product.id === p.id);
               return (
-                <div key={p.id} style={{ ...S.card, ...S.cardPop, opacity: out ? 0.5 : 1, ...(inCart ? S.cardInCart : {}) }}>
+                <div key={p.id} style={{ ...S.card, ...S.cardPop, ...(inCart ? S.cardInCart : {}) }}>
                   <div style={{ fontSize: 22, marginRight: 4 }}>{emojiFor(p.name)}</div>
                   <div style={{ flex: 1 }}>
                     <div style={S.cardName}>{p.name}{inCart && <span style={S.cartBadge}>{inCart.units} in basket</span>}</div>
-                    <div style={S.cardMeta}>{priceFmt(p.price)}/unit · {stockLabel(p)}</div>
+                    <div style={S.cardMeta}>
+                      {priceFmt(p.price)}/unit · {low ? <span style={{ color: "#C0392B", fontWeight: 600 }}>out of stock</span> : stockLabel(p)}
+                    </div>
                   </div>
-                  <button style={{ ...S.sellBtn, ...(out ? S.sellBtnOff : {}) }}
-                    disabled={out} onClick={() => setAdding(p)}>
-                    {out ? "Sold out" : "+ Add"}
-                  </button>
+                  <button style={S.sellBtn} onClick={() => setAdding(p)}>+ Add</button>
                 </div>
               );
             })}
@@ -426,10 +432,17 @@ function Seller({ user, onExit, businessName }) {
 function AddToCartModal({ product, onClose, onAdd }) {
   const [packs, setPacks] = useState("");
   const [units, setUnits] = useState("");
+  const [warned, setWarned] = useState(false);
   const ps = product.pack_size || 1;
   const totalUnits = (parseInt(packs) || 0) * ps + (parseInt(units) || 0);
   const totalPrice = totalUnits * Number(product.price);
-  const tooMany = totalUnits > product.qty;
+  const oversell = totalUnits > product.qty; // selling more than recorded stock
+
+  const handleAdd = () => {
+    if (totalUnits <= 0) return;
+    if (oversell && !warned) { setWarned(true); return; } // warn once, then allow
+    onAdd(product, totalUnits);
+  };
 
   return (
     <Modal onClose={onClose} title={`${emojiFor(product.name)} ${product.name}`}>
@@ -444,10 +457,14 @@ function AddToCartModal({ product, onClose, onAdd }) {
         <span>{totalUnits} unit{totalUnits === 1 ? "" : "s"}</span>
         <span style={{ fontWeight: 800 }}>{money(totalPrice)}</span>
       </div>
-      {tooMany && <p style={S.errTxt}>Only {product.qty} units in stock.</p>}
-      <button style={{ ...S.btn, ...S.btnDark, width: "100%", marginTop: 8 }}
-        disabled={totalUnits <= 0 || tooMany} onClick={() => onAdd(product, totalUnits)}>
-        <Plus size={18} /> Add to basket
+      {oversell && warned && (
+        <p style={{ ...S.hint, color: "#B26A00", marginBottom: 0 }}>
+          This is more than the recorded stock. That's fine — the admin will be flagged to restock. Tap again to confirm.
+        </p>
+      )}
+      <button style={{ ...S.btn, ...(oversell && warned ? S.btnWarn : S.btnDark), width: "100%", marginTop: 8 }}
+        disabled={totalUnits <= 0} onClick={handleAdd}>
+        <Plus size={18} /> {oversell && warned ? "Confirm & add anyway" : "Add to basket"}
       </button>
     </Modal>
   );
@@ -637,9 +654,9 @@ function StockManager({ products, onChange, businessId }) {
           return (
             <div key={p.id} style={S.card}>
               <div style={{ flex: 1 }}>
-                <div style={S.cardName}>{p.name} {p.qty <= p.low_at && <span style={S.lowTag}>low</span>}</div>
+                <div style={S.cardName}>{p.name} {p.qty <= 0 ? <span style={S.outTag}>out — restock</span> : p.qty <= p.low_at ? <span style={S.lowTag}>low</span> : null}</div>
                 <div style={S.cardMeta}>{priceFmt(p.price)}/unit · {p.tithe_pct}% to God · pack of {ps}</div>
-                <div style={{ ...S.cardMeta, color: "#3A7D5C", fontWeight: 600 }}>{stockLabel(p)}</div>
+                <div style={{ ...S.cardMeta, color: p.qty <= 0 ? "#C0392B" : "#1F9D55", fontWeight: 600 }}>{p.qty <= 0 ? `${p.qty} — out of stock` : stockLabel(p)}</div>
               </div>
               <div style={S.qtyCol}>
                 {ps > 1 && (
@@ -1014,6 +1031,7 @@ const S = {
   cardName: { fontSize: 15, fontWeight: 700, letterSpacing: "-0.01em" },
   cardMeta: { fontSize: 12.5, color: "#8A8475", marginTop: 2 },
   lowTag: { fontSize: 10, background: "#FFE2E2", color: "#C0392B", padding: "2px 7px", borderRadius: 20, fontWeight: 700, marginLeft: 6, verticalAlign: "middle" },
+  outTag: { fontSize: 10, background: "#C0392B", color: "#fff", padding: "2px 8px", borderRadius: 20, fontWeight: 700, marginLeft: 6, verticalAlign: "middle" },
 
   qtyCtrl: { display: "flex", alignItems: "center", gap: 8 },
   qtyCol: { display: "flex", flexDirection: "column", gap: 6 },
@@ -1036,6 +1054,7 @@ const S = {
   btn: { display: "flex", alignItems: "center", justifyContent: "center", gap: 8, border: "none", padding: "14px 16px", borderRadius: 14, fontSize: 14.5, fontWeight: 800, cursor: "pointer" },
   btnDark: { background: `linear-gradient(135deg,${accent},${lime})`, color: "#fff", boxShadow: "0 6px 16px rgba(31,157,85,0.3)" },
   btnGhost: { background: "#fff", color: ink, border: `1px solid ${line}` },
+  btnWarn: { background: `linear-gradient(135deg,${mango},#E8820C)`, color: "#fff", boxShadow: "0 6px 16px rgba(245,166,35,0.35)" },
 
   fieldWrap: { display: "block", marginBottom: 12, textAlign: "left" },
   fieldLabel: { display: "block", fontSize: 12.5, fontWeight: 600, color: "#6B6B5E", marginBottom: 6 },
