@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   Package, TrendingUp, Users, AlertTriangle, Plus, Minus, LogOut,
-  Church, Wallet, FileText, ChevronRight, Box, X, Check, Delete, RefreshCw
+  Church, Wallet, FileText, ChevronRight, Box, X, Check, Delete, RefreshCw, Search
 } from "lucide-react";
 
 // ============================================================
@@ -28,8 +28,13 @@ const sb = {
       },
       body: JSON.stringify(args),
     });
-    if (!r.ok) throw new Error((await r.json()).message || "Request failed");
-    return r.json();
+    const text = await r.text();
+    if (!r.ok) {
+      let msg = "Request failed";
+      try { msg = JSON.parse(text).message || msg; } catch {}
+      throw new Error(msg);
+    }
+    return text ? JSON.parse(text) : null;
   },
   async select(table, query = "") {
     const r = await fetch(`${SUPABASE_URL}/rest/v1/${table}?${query}`, {
@@ -73,6 +78,21 @@ const sb = {
 
 const configured = !SUPABASE_URL.includes("YOUR-PROJECT");
 const money = (n) => "$" + Number(n || 0).toFixed(2);
+
+// Show stock as "100 left (5 packs + 0)" when pack size > 1
+function stockLabel(p) {
+  const ps = p.pack_size || 1;
+  if (ps <= 1) return `${p.qty} left`;
+  const packs = Math.floor(p.qty / ps);
+  const rem = p.qty % ps;
+  return `${p.qty} left (${packs} pack${packs === 1 ? "" : "s"}${rem ? ` + ${rem}` : ""})`;
+}
+
+function filterProducts(products, search) {
+  const q = search.trim().toLowerCase();
+  if (!q) return products;
+  return products.filter((p) => p.name.toLowerCase().includes(q));
+}
 
 // ============================================================
 // 2. ROOT
@@ -237,21 +257,23 @@ function Admin({ user, onExit }) {
 // ============================================================
 function Seller({ user, onExit }) {
   const { products, sales, loading, error, refresh } = useData();
-  const [busyId, setBusyId] = useState(null);
   const [toast, setToast] = useState("");
+  const [selling, setSelling] = useState(null); // product being sold
+  const [search, setSearch] = useState("");
   const mine = sales.filter((s) => s.seller_name === user.name);
   const myTotal = mine.reduce((a, x) => a + Number(x.total), 0);
 
-  const sell = async (productId) => {
-    setBusyId(productId);
+  const doSell = async (product, units) => {
     try {
-      await sb.rpc("record_sale", { p_product_id: productId, p_qty: 1, p_seller: user.name });
+      await sb.rpc("record_sale", { p_product_id: product.id, p_qty: units, p_seller: user.name });
       setToast("Sale recorded");
+      setSelling(null);
       await refresh();
     } catch (e) { setToast(e.message); }
-    setBusyId(null);
     setTimeout(() => setToast(""), 1800);
   };
+
+  const shown = filterProducts(products, search);
 
   return (
     <div style={S.shell}>
@@ -264,20 +286,22 @@ function Seller({ user, onExit }) {
             <Stat icon={<FileText size={16} />} label="My transactions" value={mine.length} />
           </div>
           <SectionTitle>Record a sale</SectionTitle>
-          <p style={S.hint}>Tap an item each time you sell it. Stock updates for everyone.</p>
+          <p style={S.hint}>Tap an item, then enter how many packs and units were sold.</p>
+          <SearchBar value={search} onChange={setSearch} />
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {products.length === 0 && <p style={S.empty}>No products yet. Ask the admin to add stock.</p>}
-            {products.map((p) => {
+            {products.length > 0 && shown.length === 0 && <p style={S.empty}>No products match “{search}”.</p>}
+            {shown.map((p) => {
               const out = p.qty <= 0;
               return (
                 <div key={p.id} style={{ ...S.card, opacity: out ? 0.5 : 1 }}>
                   <div style={{ flex: 1 }}>
                     <div style={S.cardName}>{p.name}</div>
-                    <div style={S.cardMeta}>{money(p.price)} · {p.qty} left</div>
+                    <div style={S.cardMeta}>{money(p.price)}/unit · {stockLabel(p)}</div>
                   </div>
                   <button style={{ ...S.sellBtn, ...(out ? S.sellBtnOff : {}) }}
-                    disabled={out || busyId === p.id} onClick={() => sell(p.id)}>
-                    {out ? "Sold out" : busyId === p.id ? "…" : "Sell 1"}
+                    disabled={out} onClick={() => setSelling(p)}>
+                    {out ? "Sold out" : "Sell"}
                   </button>
                 </div>
               );
@@ -287,8 +311,48 @@ function Seller({ user, onExit }) {
           <SalesList sales={mine.slice(0, 15)} />
         </>}
       </div>
+      {selling && <SellModal product={selling} onClose={() => setSelling(null)} onConfirm={doSell} />}
       {toast && <div style={S.toast}>{toast}</div>}
     </div>
+  );
+}
+
+// Sell modal: packs + units → total units
+function SellModal({ product, onClose, onConfirm }) {
+  const [packs, setPacks] = useState("");
+  const [units, setUnits] = useState("");
+  const [busy, setBusy] = useState(false);
+  const ps = product.pack_size || 1;
+  const totalUnits = (parseInt(packs) || 0) * ps + (parseInt(units) || 0);
+  const totalPrice = totalUnits * Number(product.price);
+  const tooMany = totalUnits > product.qty;
+
+  const confirm = async () => {
+    if (totalUnits <= 0 || tooMany) return;
+    setBusy(true);
+    await onConfirm(product, totalUnits);
+    setBusy(false);
+  };
+
+  return (
+    <Modal onClose={onClose} title={product.name}>
+      <p style={{ ...S.hint, marginTop: 0 }}>
+        Pack size: {ps} unit{ps > 1 ? "s" : ""} · {stockLabel(product)} available
+      </p>
+      <div style={{ display: "flex", gap: 10 }}>
+        <Field label="Packs" value={packs} onChange={setPacks} type="number" placeholder="0" />
+        <Field label="Units" value={units} onChange={setUnits} type="number" placeholder="0" />
+      </div>
+      <div style={S.sellSummary}>
+        <span>{totalUnits} unit{totalUnits === 1 ? "" : "s"}</span>
+        <span style={{ fontWeight: 800 }}>{money(totalPrice)}</span>
+      </div>
+      {tooMany && <p style={S.errTxt}>Only {product.qty} units in stock.</p>}
+      <button style={{ ...S.btn, ...S.btnDark, width: "100%", marginTop: 8 }}
+        disabled={busy || totalUnits <= 0 || tooMany} onClick={confirm}>
+        <Check size={18} /> {busy ? "Recording…" : "Record sale"}
+      </button>
+    </Modal>
   );
 }
 
@@ -297,25 +361,28 @@ function Seller({ user, onExit }) {
 // ============================================================
 function StockManager({ products, onChange }) {
   const [open, setOpen] = useState(false);
-  const [f, setF] = useState({ name: "", price: "", pct: "", qty: "", low: "5" });
+  const [search, setSearch] = useState("");
+  const [f, setF] = useState({ name: "", price: "", pct: "", packs: "", units: "", pack_size: "1", low: "5" });
   const [busy, setBusy] = useState(false);
 
   const add = async () => {
     if (!f.name.trim() || f.price === "") return;
     setBusy(true);
     try {
+      const ps = parseInt(f.pack_size) || 1;
+      const opening = (parseInt(f.packs) || 0) * ps + (parseInt(f.units) || 0);
       await sb.insert("products", {
         name: f.name.trim(), price: parseFloat(f.price) || 0,
-        tithe_pct: parseFloat(f.pct) || 0, qty: parseInt(f.qty) || 0,
-        low_at: parseInt(f.low) || 5,
+        tithe_pct: parseFloat(f.pct) || 0, qty: opening,
+        pack_size: ps, low_at: parseInt(f.low) || 5,
       });
-      setF({ name: "", price: "", pct: "", qty: "", low: "5" });
+      setF({ name: "", price: "", pct: "", packs: "", units: "", pack_size: "1", low: "5" });
       setOpen(false); await onChange();
     } catch (e) { alert(e.message); }
     setBusy(false);
   };
-  const restock = async (p, n) => {
-    await sb.patch("products", `id=eq.${p.id}`, { qty: Math.max(0, p.qty + n) });
+  const restock = async (p, units) => {
+    await sb.patch("products", `id=eq.${p.id}`, { qty: Math.max(0, p.qty + units) });
     await onChange();
   };
   const remove = async (id) => {
@@ -323,35 +390,56 @@ function StockManager({ products, onChange }) {
     await onChange();
   };
 
+  const shown = filterProducts(products, search);
+
   return (
     <>
       <button style={{ ...S.btn, ...S.btnDark, width: "100%", marginBottom: 14 }} onClick={() => setOpen(true)}>
         <Plus size={18} /> Add new product
       </button>
+      {products.length > 0 && <SearchBar value={search} onChange={setSearch} />}
       {products.length === 0 && <p style={S.empty}>No products yet. Add your first item above.</p>}
+      {products.length > 0 && shown.length === 0 && <p style={S.empty}>No products match “{search}”.</p>}
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        {products.map((p) => (
-          <div key={p.id} style={S.card}>
-            <div style={{ flex: 1 }}>
-              <div style={S.cardName}>{p.name} {p.qty <= p.low_at && <span style={S.lowTag}>low</span>}</div>
-              <div style={S.cardMeta}>{money(p.price)} · {p.tithe_pct}% to church</div>
+        {shown.map((p) => {
+          const ps = p.pack_size || 1;
+          return (
+            <div key={p.id} style={S.card}>
+              <div style={{ flex: 1 }}>
+                <div style={S.cardName}>{p.name} {p.qty <= p.low_at && <span style={S.lowTag}>low</span>}</div>
+                <div style={S.cardMeta}>{money(p.price)}/unit · {p.tithe_pct}% church · pack of {ps}</div>
+                <div style={{ ...S.cardMeta, color: "#3A7D5C", fontWeight: 600 }}>{stockLabel(p)}</div>
+              </div>
+              <div style={S.qtyCol}>
+                {ps > 1 && (
+                  <div style={S.qtyCtrl}>
+                    <button style={S.qtyBtn} onClick={() => restock(p, -ps)}><Minus size={13} /></button>
+                    <span style={S.qtyTiny}>pack</span>
+                    <button style={S.qtyBtn} onClick={() => restock(p, ps)}><Plus size={13} /></button>
+                  </div>
+                )}
+                <div style={S.qtyCtrl}>
+                  <button style={S.qtyBtn} onClick={() => restock(p, -1)}><Minus size={13} /></button>
+                  <span style={S.qtyTiny}>unit</span>
+                  <button style={S.qtyBtn} onClick={() => restock(p, 1)}><Plus size={13} /></button>
+                </div>
+              </div>
+              <button style={S.delBtn} onClick={() => remove(p.id)}><X size={16} /></button>
             </div>
-            <div style={S.qtyCtrl}>
-              <button style={S.qtyBtn} onClick={() => restock(p, -1)}><Minus size={14} /></button>
-              <span style={S.qtyNum}>{p.qty}</span>
-              <button style={S.qtyBtn} onClick={() => restock(p, 1)}><Plus size={14} /></button>
-            </div>
-            <button style={S.delBtn} onClick={() => remove(p.id)}><X size={16} /></button>
-          </div>
-        ))}
+          );
+        })}
       </div>
       {open && (
         <Modal onClose={() => setOpen(false)} title="New product">
           <Field label="Product name" value={f.name} onChange={(v)=>setF({...f,name:v})} placeholder="e.g. Maputi snack" />
-          <Field label="Selling price ($)" value={f.price} onChange={(v)=>setF({...f,price:v})} type="number" placeholder="1.50" />
+          <Field label="Selling price per unit ($)" value={f.price} onChange={(v)=>setF({...f,price:v})} type="number" placeholder="1.50" />
+          <Field label="Units per pack / carton" value={f.pack_size} onChange={(v)=>setF({...f,pack_size:v})} type="number" placeholder="20" />
           <Field label="Church percentage (%)" value={f.pct} onChange={(v)=>setF({...f,pct:v})} type="number" placeholder="10" />
-          <Field label="Opening stock quantity" value={f.qty} onChange={(v)=>setF({...f,qty:v})} type="number" placeholder="100" />
-          <Field label="Warn me when stock drops to" value={f.low} onChange={(v)=>setF({...f,low:v})} type="number" placeholder="5" />
+          <div style={{ display: "flex", gap: 10 }}>
+            <Field label="Opening packs" value={f.packs} onChange={(v)=>setF({...f,packs:v})} type="number" placeholder="0" />
+            <Field label="Opening units" value={f.units} onChange={(v)=>setF({...f,units:v})} type="number" placeholder="0" />
+          </div>
+          <Field label="Warn me when units drop to" value={f.low} onChange={(v)=>setF({...f,low:v})} type="number" placeholder="5" />
           <button style={{ ...S.btn, ...S.btnDark, width: "100%", marginTop: 8 }} disabled={busy} onClick={add}>
             <Check size={18} /> {busy ? "Saving…" : "Save product"}
           </button>
@@ -528,6 +616,16 @@ function SalesList({ sales, showSeller }) {
   );
 }
 function SectionTitle({ children }) { return <div style={S.sectionTitle}>{children}</div>; }
+function SearchBar({ value, onChange }) {
+  return (
+    <div style={S.searchWrap}>
+      <Search size={16} style={{ color: "#8A8475", flexShrink: 0 }} />
+      <input style={S.searchInput} value={value} placeholder="Search products…"
+        onChange={(e) => onChange(e.target.value)} />
+      {value && <button style={S.searchClear} onClick={() => onChange("")}><X size={15} /></button>}
+    </div>
+  );
+}
 function Loading() { return <div style={{ textAlign: "center", padding: "40px 0" }}><div style={S.loadDot} /></div>; }
 function Field({ label, value, onChange, type = "text", placeholder }) {
   return (
@@ -614,6 +712,8 @@ const S = {
   lowTag: { fontSize: 10, background: "#FBEAE2", color: "#9C4A2A", padding: "2px 7px", borderRadius: 20, fontWeight: 700, marginLeft: 6, verticalAlign: "middle" },
 
   qtyCtrl: { display: "flex", alignItems: "center", gap: 8 },
+  qtyCol: { display: "flex", flexDirection: "column", gap: 6 },
+  qtyTiny: { minWidth: 30, textAlign: "center", fontSize: 11, color: "#8A8475", fontWeight: 600 },
   qtyBtn: { width: 30, height: 30, borderRadius: 8, border: `1px solid ${line}`, background: paper, display: "grid", placeItems: "center", cursor: "pointer", color: ink },
   qtyNum: { minWidth: 28, textAlign: "center", fontWeight: 800, fontSize: 16 },
   delBtn: { background: "transparent", border: "none", color: "#C0392B", cursor: "pointer", padding: 4, display: "grid", placeItems: "center" },
@@ -641,6 +741,11 @@ const S = {
   modalTitle: { fontSize: 19, fontWeight: 800 },
 
   toast: { position: "fixed", bottom: 24, left: "50%", transform: "translateX(-50%)", background: ink, color: "#fff", padding: "11px 20px", borderRadius: 12, fontSize: 14, fontWeight: 600, zIndex: 60 },
+
+  searchWrap: { display: "flex", alignItems: "center", gap: 8, background: "#fff", border: `1px solid ${line}`, borderRadius: 11, padding: "9px 13px", marginBottom: 12 },
+  searchInput: { flex: 1, border: "none", outline: "none", background: "transparent", fontSize: 14.5, color: ink },
+  searchClear: { background: "transparent", border: "none", color: "#8A8475", cursor: "pointer", padding: 0, display: "grid", placeItems: "center" },
+  sellSummary: { display: "flex", justifyContent: "space-between", alignItems: "center", background: "#EFE9DC", borderRadius: 10, padding: "11px 14px", fontSize: 14.5, marginTop: 4 },
 };
 
 if (typeof document !== "undefined" && !document.getElementById("sf-spin")) {
