@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   Package, TrendingUp, Users, AlertTriangle, Plus, Minus, LogOut,
-  Church, Wallet, FileText, ChevronRight, Box, X, Check, Delete, RefreshCw, Search, Pencil
+  Church, Wallet, FileText, ChevronRight, Box, X, Check, Delete, RefreshCw, Search, Pencil, ShoppingCart, Send
 } from "lucide-react";
 
 // ============================================================
@@ -94,16 +94,47 @@ function filterProducts(products, search) {
   return products.filter((p) => p.name.toLowerCase().includes(q));
 }
 
+// Pick a fun grocery emoji based on the product name
+function emojiFor(name) {
+  const n = (name || "").toLowerCase();
+  const map = [
+    [["water", "aqua"], "💧"], [["juice", "cascade", "orange", "mazoe", "drink", "cordial"], "🧃"],
+    [["soda", "coke", "fanta", "sprite", "cola", "fizzy"], "🥤"], [["milk", "lacto", "yog"], "🥛"],
+    [["bread", "loaf", "buns"], "🍞"], [["snack", "chip", "crisp", "maputi", "popcorn"], "🍿"],
+    [["biscuit", "cookie"], "🍪"], [["sweet", "candy", "lolli"], "🍬"], [["choc"], "🍫"],
+    [["sugar"], "🧂"], [["salt"], "🧂"], [["rice"], "🍚"], [["mealie", "maize", "meal", "flour"], "🌽"],
+    [["egg"], "🥚"], [["cooking oil", "oil"], "🛢️"], [["soap", "detergent", "washing"], "🧼"],
+    [["tea", "coffee"], "☕"], [["beans"], "🫘"], [["tomato"], "🍅"], [["apple"], "🍎"],
+    [["banana"], "🍌"], [["meat", "beef", "chicken"], "🍗"], [["fish"], "🐟"], [["salt"], "🧂"],
+  ];
+  for (const [keys, emo] of map) if (keys.some((k) => n.includes(k))) return emo;
+  return "🛒";
+}
+
 // ============================================================
 // 2. ROOT
 // ============================================================
 export default function App() {
-  const [user, setUser] = useState(null); // {id,name,role}
+  const [user, setUser] = useState(null); // {id,name,role,business_id}
+  const [bizNames, setBizNames] = useState({ 1: "Business 1", 2: "Business 2" });
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const rows = await sb.select("businesses", "select=id,name");
+        const m = {};
+        rows.forEach((b) => { m[b.id] = b.name; });
+        setBizNames((prev) => ({ ...prev, ...m }));
+      } catch {}
+    })();
+  }, [user]);
+
   if (!configured) return <SetupNotice />;
   if (!user) return <Login onLogin={setUser} />;
+  const businessName = bizNames[user.business_id] || `Business ${user.business_id}`;
   return user.role === "admin"
-    ? <Admin user={user} onExit={() => setUser(null)} />
-    : <Seller user={user} onExit={() => setUser(null)} />;
+    ? <Admin user={user} businessName={businessName} onExit={() => setUser(null)} />
+    : <Seller user={user} businessName={businessName} onExit={() => setUser(null)} />;
 }
 
 // ============================================================
@@ -129,7 +160,7 @@ function Login({ onLogin }) {
     <div style={S.shell}>
       <div style={S.loginCard}>
         <div style={S.logoMark}><Box size={26} strokeWidth={2.4} /></div>
-        <h1 style={S.loginTitle}>Stockflow</h1>
+        <h1 style={S.loginTitle}>Pamusika</h1>
         <p style={S.loginSub}>Enter your name and PIN to sign in.</p>
 
         <Field label="Name" value={name} onChange={setName} placeholder="e.g. Mum" />
@@ -210,7 +241,7 @@ function useData(businessId) {
 // ============================================================
 // 5. ADMIN
 // ============================================================
-function Admin({ user, onExit }) {
+function Admin({ user, onExit, businessName }) {
   const { products, sales, loading, error, refresh } = useData(user.business_id);
   const [tab, setTab] = useState("overview");
 
@@ -221,7 +252,7 @@ function Admin({ user, onExit }) {
 
   return (
     <div style={S.shell}>
-      <Header title={user.name} sub={`Admin · Business ${user.business_id}`} onExit={onExit} onRefresh={refresh} />
+      <Header title={businessName} sub={`${user.name} · Admin`} onExit={onExit} onRefresh={refresh} />
       {error && <div style={S.alert}><AlertTriangle size={16} /> {error}</div>}
       {low.length > 0 && (
         <div style={S.alert}>
@@ -256,29 +287,60 @@ function Admin({ user, onExit }) {
 // ============================================================
 // 6. SELLER
 // ============================================================
-function Seller({ user, onExit }) {
+function Seller({ user, onExit, businessName }) {
   const { products, sales, loading, error, refresh } = useData(user.business_id);
   const [toast, setToast] = useState("");
-  const [selling, setSelling] = useState(null); // product being sold
+  const [adding, setAdding] = useState(null);   // product being added to cart
+  const [cart, setCart] = useState([]);          // [{product, units}]
+  const [showCart, setShowCart] = useState(false);
+  const [receipt, setReceipt] = useState(null);  // completed invoice for sharing
   const [search, setSearch] = useState("");
   const mine = sales.filter((s) => s.seller_name === user.name);
   const myTotal = mine.reduce((a, x) => a + Number(x.total), 0);
 
-  const doSell = async (product, units) => {
+  const addToCart = (product, units) => {
+    setCart((prev) => {
+      const existing = prev.find((c) => c.product.id === product.id);
+      if (existing) return prev.map((c) => c.product.id === product.id ? { ...c, units: c.units + units } : c);
+      return [...prev, { product, units }];
+    });
+    setAdding(null);
+    setToast("Added to cart");
+    setTimeout(() => setToast(""), 1200);
+  };
+  const removeFromCart = (id) => setCart((prev) => prev.filter((c) => c.product.id !== id));
+
+  const cartTotal = cart.reduce((a, c) => a + c.units * Number(c.product.price), 0);
+  const cartCount = cart.reduce((a, c) => a + c.units, 0);
+
+  const checkout = async () => {
+    if (cart.length === 0) return;
     try {
-      await sb.rpc("record_sale", { p_product_id: product.id, p_qty: units, p_seller: user.name });
-      setToast("Sale recorded");
-      setSelling(null);
+      const items = cart.map((c) => ({ product_id: c.product.id, qty: c.units }));
+      const inv = await sb.rpc("record_invoice", { p_items: items, p_seller: user.name });
+      const invoiceNo = typeof inv === "string" ? inv : (inv && inv[0]) || "INV";
+      setReceipt({
+        no: invoiceNo,
+        when: new Date(),
+        seller: user.name,
+        business: businessName,
+        lines: cart.map((c) => ({
+          name: c.product.name, units: c.units,
+          price: Number(c.product.price), pack_size: c.product.pack_size || 1,
+          total: c.units * Number(c.product.price),
+        })),
+        total: cartTotal,
+      });
+      setCart([]); setShowCart(false);
       await refresh();
-    } catch (e) { setToast(e.message); }
-    setTimeout(() => setToast(""), 1800);
+    } catch (e) { setToast(e.message); setTimeout(() => setToast(""), 2500); }
   };
 
   const shown = filterProducts(products, search);
 
   return (
     <div style={S.shell}>
-      <Header title={user.name} sub="Salesperson" onExit={onExit} onRefresh={refresh} />
+      <Header title={user.name} sub={`${businessName} · Seller`} onExit={onExit} onRefresh={refresh} />
       {error && <div style={S.alert}><AlertTriangle size={16} /> {error}</div>}
       <div style={S.body}>
         {loading ? <Loading /> : <>
@@ -286,57 +348,66 @@ function Seller({ user, onExit }) {
             <Stat icon={<TrendingUp size={16} />} label="My sales total" value={money(myTotal)} accent />
             <Stat icon={<FileText size={16} />} label="My transactions" value={mine.length} />
           </div>
-          <SectionTitle>Record a sale</SectionTitle>
-          <p style={S.hint}>Tap an item, then enter how many packs and units were sold.</p>
+          <SectionTitle>New sale</SectionTitle>
+          <p style={S.hint}>Tap items to add to the basket, then check out as one receipt.</p>
           <SearchBar value={search} onChange={setSearch} />
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {products.length === 0 && <p style={S.empty}>No products yet. Ask the admin to add stock.</p>}
             {products.length > 0 && shown.length === 0 && <p style={S.empty}>No products match “{search}”.</p>}
             {shown.map((p) => {
               const out = p.qty <= 0;
+              const inCart = cart.find((c) => c.product.id === p.id);
               return (
-                <div key={p.id} style={{ ...S.card, opacity: out ? 0.5 : 1 }}>
+                <div key={p.id} style={{ ...S.card, ...S.cardPop, opacity: out ? 0.5 : 1, ...(inCart ? S.cardInCart : {}) }}>
+                  <div style={{ fontSize: 22, marginRight: 4 }}>{emojiFor(p.name)}</div>
                   <div style={{ flex: 1 }}>
-                    <div style={S.cardName}>{p.name}</div>
+                    <div style={S.cardName}>{p.name}{inCart && <span style={S.cartBadge}>{inCart.units} in basket</span>}</div>
                     <div style={S.cardMeta}>{money(p.price)}/unit · {stockLabel(p)}</div>
                   </div>
                   <button style={{ ...S.sellBtn, ...(out ? S.sellBtnOff : {}) }}
-                    disabled={out} onClick={() => setSelling(p)}>
-                    {out ? "Sold out" : "Sell"}
+                    disabled={out} onClick={() => setAdding(p)}>
+                    {out ? "Sold out" : "+ Add"}
                   </button>
                 </div>
               );
             })}
           </div>
-          <SectionTitle>My sales</SectionTitle>
+          <SectionTitle>My recent sales</SectionTitle>
           <SalesList sales={mine.slice(0, 15)} />
         </>}
       </div>
-      {selling && <SellModal product={selling} onClose={() => setSelling(null)} onConfirm={doSell} />}
+
+      {/* floating basket button */}
+      {cart.length > 0 && (
+        <button style={S.cartFab} onClick={() => setShowCart(true)}>
+          <ShoppingCart size={20} />
+          <span style={S.cartFabCount}>{cartCount}</span>
+          <span style={{ marginLeft: 6, fontWeight: 800 }}>{money(cartTotal)}</span>
+        </button>
+      )}
+
+      {adding && <AddToCartModal product={adding} onClose={() => setAdding(null)} onAdd={addToCart} />}
+      {showCart && (
+        <CartModal cart={cart} total={cartTotal} onClose={() => setShowCart(false)}
+          onRemove={removeFromCart} onCheckout={checkout} />
+      )}
+      {receipt && <ReceiptModal receipt={receipt} onClose={() => setReceipt(null)} />}
       {toast && <div style={S.toast}>{toast}</div>}
     </div>
   );
 }
 
-// Sell modal: packs + units → total units
-function SellModal({ product, onClose, onConfirm }) {
+// Add-to-cart modal: packs + units
+function AddToCartModal({ product, onClose, onAdd }) {
   const [packs, setPacks] = useState("");
   const [units, setUnits] = useState("");
-  const [busy, setBusy] = useState(false);
   const ps = product.pack_size || 1;
   const totalUnits = (parseInt(packs) || 0) * ps + (parseInt(units) || 0);
   const totalPrice = totalUnits * Number(product.price);
   const tooMany = totalUnits > product.qty;
 
-  const confirm = async () => {
-    if (totalUnits <= 0 || tooMany) return;
-    setBusy(true);
-    await onConfirm(product, totalUnits);
-    setBusy(false);
-  };
-
   return (
-    <Modal onClose={onClose} title={product.name}>
+    <Modal onClose={onClose} title={`${emojiFor(product.name)} ${product.name}`}>
       <p style={{ ...S.hint, marginTop: 0 }}>
         Pack size: {ps} unit{ps > 1 ? "s" : ""} · {stockLabel(product)} available
       </p>
@@ -350,11 +421,87 @@ function SellModal({ product, onClose, onConfirm }) {
       </div>
       {tooMany && <p style={S.errTxt}>Only {product.qty} units in stock.</p>}
       <button style={{ ...S.btn, ...S.btnDark, width: "100%", marginTop: 8 }}
-        disabled={busy || totalUnits <= 0 || tooMany} onClick={confirm}>
-        <Check size={18} /> {busy ? "Recording…" : "Record sale"}
+        disabled={totalUnits <= 0 || tooMany} onClick={() => onAdd(product, totalUnits)}>
+        <Plus size={18} /> Add to basket
       </button>
     </Modal>
   );
+}
+
+// Cart review + checkout
+function CartModal({ cart, total, onClose, onRemove, onCheckout }) {
+  const [busy, setBusy] = useState(false);
+  const go = async () => { setBusy(true); await onCheckout(); setBusy(false); };
+  return (
+    <Modal onClose={onClose} title="🧺 Basket">
+      {cart.length === 0 && <p style={S.empty}>Basket is empty.</p>}
+      <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 14 }}>
+        {cart.map((c) => (
+          <div key={c.product.id} style={S.cartLine}>
+            <div style={{ fontSize: 20 }}>{emojiFor(c.product.name)}</div>
+            <div style={{ flex: 1 }}>
+              <div style={S.cardName}>{c.product.name}</div>
+              <div style={S.cardMeta}>{c.units} × {money(c.product.price)}</div>
+            </div>
+            <div style={{ fontWeight: 800 }}>{money(c.units * Number(c.product.price))}</div>
+            <button style={S.delBtn} onClick={() => onRemove(c.product.id)}><X size={16} /></button>
+          </div>
+        ))}
+      </div>
+      <div style={S.cartTotalRow}>
+        <span>Total</span>
+        <span>{money(total)}</span>
+      </div>
+      <button style={{ ...S.btn, ...S.btnDark, width: "100%", marginTop: 10 }}
+        disabled={busy || cart.length === 0} onClick={go}>
+        <Check size={18} /> {busy ? "Completing…" : "Complete sale"}
+      </button>
+    </Modal>
+  );
+}
+
+// Receipt with share button
+function ReceiptModal({ receipt, onClose }) {
+  const text = receiptText(receipt);
+  const share = async () => {
+    try {
+      if (navigator.share) await navigator.share({ title: `Receipt ${receipt.no}`, text });
+      else { await navigator.clipboard.writeText(text); alert("Receipt copied — you can paste it into WhatsApp or SMS."); }
+    } catch {}
+  };
+  return (
+    <Modal onClose={onClose} title="✅ Sale complete">
+      <div style={S.receipt}>
+        <div style={{ textAlign: "center", marginBottom: 10 }}>
+          <div style={{ fontSize: 18, fontWeight: 800 }}>{receipt.business}</div>
+          <div style={S.cardMeta}>Receipt {receipt.no}</div>
+          <div style={S.cardMeta}>{receipt.when.toLocaleString()}</div>
+        </div>
+        <div style={S.receiptDivider} />
+        {receipt.lines.map((l, i) => (
+          <div key={i} style={S.receiptLine}>
+            <span style={{ flex: 1 }}>{l.name} <span style={{ color: "#8A8475" }}>×{l.units}</span></span>
+            <span style={{ fontWeight: 700 }}>{money(l.total)}</span>
+          </div>
+        ))}
+        <div style={S.receiptDivider} />
+        <div style={{ ...S.receiptLine, fontWeight: 800, fontSize: 16 }}>
+          <span style={{ flex: 1 }}>Total</span>
+          <span>{money(receipt.total)}</span>
+        </div>
+        <div style={{ ...S.cardMeta, textAlign: "center", marginTop: 8 }}>Served by {receipt.seller}</div>
+      </div>
+      <button style={{ ...S.btn, ...S.btnDark, width: "100%", marginTop: 12 }} onClick={share}>
+        <Send size={17} /> Share receipt with customer
+      </button>
+      <button style={{ ...S.btn, ...S.btnGhost, width: "100%", marginTop: 8 }} onClick={onClose}>Done</button>
+    </Modal>
+  );
+}
+
+function receiptText(r) {
+  const lines = r.lines.map((l) => `${l.name} x${l.units}  ${money(l.total)}`).join("\n");
+  return `${r.business}\nReceipt ${r.no}\n${r.when.toLocaleString()}\n\n${lines}\n\nTOTAL: ${money(r.total)}\nServed by ${r.seller}\nThank you!`;
 }
 
 // ============================================================
@@ -817,11 +964,29 @@ const S = {
   searchInput: { flex: 1, border: "none", outline: "none", background: "transparent", fontSize: 14.5, color: ink },
   searchClear: { background: "transparent", border: "none", color: "#8A8475", cursor: "pointer", padding: 0, display: "grid", placeItems: "center" },
   sellSummary: { display: "flex", justifyContent: "space-between", alignItems: "center", background: "#EFE9DC", borderRadius: 10, padding: "11px 14px", fontSize: 14.5, marginTop: 4 },
+
+  cardPop: { animation: "pop 0.25s ease", transition: "transform 0.12s ease, box-shadow 0.12s ease" },
+  cardInCart: { borderColor: accent, boxShadow: "0 0 0 1px #3A7D5C inset" },
+  cartBadge: { fontSize: 10, background: accent, color: "#fff", padding: "2px 8px", borderRadius: 20, fontWeight: 700, marginLeft: 8, verticalAlign: "middle" },
+  cartFab: { position: "fixed", bottom: 22, left: "50%", transform: "translateX(-50%)", display: "flex", alignItems: "center", gap: 4, background: accent, color: "#fff", border: "none", padding: "14px 22px", borderRadius: 30, fontSize: 15, cursor: "pointer", boxShadow: "0 8px 24px rgba(58,125,92,0.4)", zIndex: 55, animation: "rise 0.3s ease" },
+  cartFabCount: { background: "#fff", color: accent, borderRadius: "50%", minWidth: 22, height: 22, display: "grid", placeItems: "center", fontSize: 12, fontWeight: 800, marginLeft: 4 },
+  cartLine: { display: "flex", alignItems: "center", gap: 10, background: "#fff", border: `1px solid ${line}`, borderRadius: 11, padding: "10px 13px" },
+  cartTotalRow: { display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 18, fontWeight: 800, padding: "12px 14px", background: "#EFE9DC", borderRadius: 11 },
+  receipt: { background: "#fff", border: `1px solid ${line}`, borderRadius: 14, padding: "18px 16px" },
+  receiptDivider: { borderTop: `1px dashed ${line}`, margin: "10px 0" },
+  receiptLine: { display: "flex", justifyContent: "space-between", fontSize: 14, padding: "3px 0" },
 };
 
 if (typeof document !== "undefined" && !document.getElementById("sf-spin")) {
   const st = document.createElement("style");
   st.id = "sf-spin";
-  st.textContent = "@keyframes spin{to{transform:rotate(360deg)}}";
+  st.textContent = `
+    @keyframes spin{to{transform:rotate(360deg)}}
+    @keyframes pop{0%{transform:scale(0.97);opacity:0.6}100%{transform:scale(1);opacity:1}}
+    @keyframes rise{0%{transform:translate(-50%,40px);opacity:0}100%{transform:translate(-50%,0);opacity:1}}
+    @keyframes popIn{0%{transform:scale(0.9);opacity:0}100%{transform:scale(1);opacity:1}}
+    button{transition:transform 0.08s ease, filter 0.12s ease}
+    button:active{transform:scale(0.95)}
+  `;
   document.head.appendChild(st);
 }
