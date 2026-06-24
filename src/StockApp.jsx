@@ -78,6 +78,13 @@ const sb = {
 
 const configured = !SUPABASE_URL.includes("YOUR-PROJECT");
 const money = (n) => "$" + Number(n || 0).toFixed(2);
+// Unit price shown with full precision (trims trailing zeros): 0.475 -> $0.475
+const priceFmt = (n) => {
+  const num = Number(n || 0);
+  let s = num.toFixed(4).replace(/0+$/, "").replace(/\.$/, "");
+  if (!s.includes(".")) s = num.toFixed(2);
+  return "$" + s;
+};
 
 // Show stock as "100 left (5 packs + 0)" when pack size > 1
 function stockLabel(p) {
@@ -267,10 +274,10 @@ function Admin({ user, onExit, businessName }) {
         {loading ? <Loading /> : <>
           {tab === "overview" && <>
             <div style={S.statGrid}>
-              <Stat icon={<TrendingUp size={16} />} label="Total sales" value={money(totalSales)} accent />
-              <Stat icon={<Wallet size={16} />} label="Cash in hand" value={money(cash)} />
-              <Stat icon={<Church size={16} />} label="Church (tithe)" value={money(totalTithe)} />
-              <Stat icon={<Package size={16} />} label="Items in stock" value={products.reduce((a,p)=>a+p.qty,0)} />
+              <Stat icon={<TrendingUp size={16} />} label="Total sales" value={money(totalSales)} accent delay={0} />
+              <Stat icon={<Wallet size={16} />} label="Cash in hand" value={money(cash)} tint={mango} delay={0.05} />
+              <Stat icon={<Church size={16} />} label="Church (tithe)" value={money(totalTithe)} tint={grape} delay={0.1} />
+              <Stat icon={<Package size={16} />} label="Items in stock" value={products.reduce((a,p)=>a+p.qty,0)} tint={sky} delay={0.15} />
             </div>
             <SectionTitle>Recent sales</SectionTitle>
             <SalesList sales={sales.slice(0,12)} showSeller />
@@ -362,7 +369,7 @@ function Seller({ user, onExit, businessName }) {
                   <div style={{ fontSize: 22, marginRight: 4 }}>{emojiFor(p.name)}</div>
                   <div style={{ flex: 1 }}>
                     <div style={S.cardName}>{p.name}{inCart && <span style={S.cartBadge}>{inCart.units} in basket</span>}</div>
-                    <div style={S.cardMeta}>{money(p.price)}/unit · {stockLabel(p)}</div>
+                    <div style={S.cardMeta}>{priceFmt(p.price)}/unit · {stockLabel(p)}</div>
                   </div>
                   <button style={{ ...S.sellBtn, ...(out ? S.sellBtnOff : {}) }}
                     disabled={out} onClick={() => setAdding(p)}>
@@ -431,7 +438,14 @@ function AddToCartModal({ product, onClose, onAdd }) {
 // Cart review + checkout
 function CartModal({ cart, total, onClose, onRemove, onCheckout }) {
   const [busy, setBusy] = useState(false);
+  const [received, setReceived] = useState("");
   const go = async () => { setBusy(true); await onCheckout(); setBusy(false); };
+
+  const recNum = parseFloat(received);
+  const hasReceived = received !== "" && !isNaN(recNum);
+  const change = hasReceived ? recNum - total : 0;
+  const shortfall = hasReceived && change < 0;
+
   return (
     <Modal onClose={onClose} title="🧺 Basket">
       {cart.length === 0 && <p style={S.empty}>Basket is empty.</p>}
@@ -441,7 +455,7 @@ function CartModal({ cart, total, onClose, onRemove, onCheckout }) {
             <div style={{ fontSize: 20 }}>{emojiFor(c.product.name)}</div>
             <div style={{ flex: 1 }}>
               <div style={S.cardName}>{c.product.name}</div>
-              <div style={S.cardMeta}>{c.units} × {money(c.product.price)}</div>
+              <div style={S.cardMeta}>{c.units} × {priceFmt(c.product.price)}</div>
             </div>
             <div style={{ fontWeight: 800 }}>{money(c.units * Number(c.product.price))}</div>
             <button style={S.delBtn} onClick={() => onRemove(c.product.id)}><X size={16} /></button>
@@ -452,7 +466,18 @@ function CartModal({ cart, total, onClose, onRemove, onCheckout }) {
         <span>Total</span>
         <span>{money(total)}</span>
       </div>
-      <button style={{ ...S.btn, ...S.btnDark, width: "100%", marginTop: 10 }}
+
+      <div style={{ marginTop: 12 }}>
+        <Field label="Amount received from customer ($)" value={received} onChange={setReceived} type="number" placeholder="0.00" />
+      </div>
+      {hasReceived && (
+        <div style={{ ...S.cartTotalRow, background: shortfall ? "#FFE2E2" : "#EAF7EE", color: shortfall ? "#C0392B" : accent }}>
+          <span>{shortfall ? "Still owing" : "Change to give"}</span>
+          <span>{money(Math.abs(change))}</span>
+        </div>
+      )}
+
+      <button style={{ ...S.btn, ...S.btnDark, width: "100%", marginTop: 12 }}
         disabled={busy || cart.length === 0} onClick={go}>
         <Check size={18} /> {busy ? "Completing…" : "Complete sale"}
       </button>
@@ -585,7 +610,7 @@ function StockManager({ products, onChange, businessId }) {
             <div key={p.id} style={S.card}>
               <div style={{ flex: 1 }}>
                 <div style={S.cardName}>{p.name} {p.qty <= p.low_at && <span style={S.lowTag}>low</span>}</div>
-                <div style={S.cardMeta}>{money(p.price)}/unit · {p.tithe_pct}% church · pack of {ps}</div>
+                <div style={S.cardMeta}>{priceFmt(p.price)}/unit · {p.tithe_pct}% church · pack of {ps}</div>
                 <div style={{ ...S.cardMeta, color: "#3A7D5C", fontWeight: 600 }}>{stockLabel(p)}</div>
               </div>
               <div style={S.qtyCol}>
@@ -687,10 +712,10 @@ function Report({ sales, totalSales, totalTithe, cash, low }) {
         </div>
       </div>
       <div style={S.statGrid}>
-        <Stat icon={<TrendingUp size={16} />} label="Total sales" value={money(totalSales)} accent />
-        <Stat icon={<Wallet size={16} />} label="Cash in hand" value={money(cash)} />
-        <Stat icon={<Church size={16} />} label="Owed to church" value={money(totalTithe)} />
-        <Stat icon={<Package size={16} />} label="Units sold" value={Object.values(byProduct).reduce((a,p)=>a+p.qty,0)} />
+        <Stat icon={<TrendingUp size={16} />} label="Total sales" value={money(totalSales)} accent delay={0} />
+        <Stat icon={<Wallet size={16} />} label="Cash in hand" value={money(cash)} tint={mango} delay={0.05} />
+        <Stat icon={<Church size={16} />} label="Owed to church" value={money(totalTithe)} tint={grape} delay={0.1} />
+        <Stat icon={<Package size={16} />} label="Units sold" value={Object.values(byProduct).reduce((a,p)=>a+p.qty,0)} tint={sky} delay={0.15} />
       </div>
       <SectionTitle>By product</SectionTitle>
       {Object.keys(byProduct).length === 0 && <p style={S.empty}>No sales recorded yet.</p>}
@@ -800,11 +825,13 @@ function Tabs({ tab, setTab, items }) {
     </div>
   );
 }
-function Stat({ icon, label, value, accent }) {
+function Stat({ icon, label, value, accent, tint, delay = 0 }) {
   return (
-    <div style={{ ...S.stat, ...(accent ? S.statAccent : {}) }}>
-      <div style={{ ...S.statIcon, ...(accent ? { color: "#fff", background: "rgba(255,255,255,0.18)" } : {}) }}>{icon}</div>
-      <div style={{ ...S.statLabel, ...(accent ? { color: "rgba(255,255,255,0.8)" } : {}) }}>{label}</div>
+    <div style={{ ...S.stat, ...(accent ? S.statAccent : {}), animationDelay: `${delay}s` }}>
+      <div style={{ ...S.statIcon,
+        ...(accent ? { color: "#fff", background: "rgba(255,255,255,0.22)" }
+                   : tint ? { color: "#fff", background: tint } : {}) }}>{icon}</div>
+      <div style={{ ...S.statLabel, ...(accent ? { color: "rgba(255,255,255,0.85)" } : {}) }}>{label}</div>
       <div style={{ ...S.statValue, ...(accent ? { color: "#fff" } : {}) }}>{value}</div>
     </div>
   );
@@ -883,70 +910,71 @@ function SetupNotice() {
 // ============================================================
 // 11. STYLES
 // ============================================================
-const ink = "#1F2421", paper = "#F3EFE6", accent = "#3A7D5C", line = "#E2DCCD";
+const ink = "#152019", paper = "#F3EFE6", accent = "#1F9D55", line = "#E2DCCD";
+const lime = "#7CC243", mango = "#F5A623", berry = "#E0457B", sky = "#2FA7D8", grape = "#7C5CD6";
 const S = {
-  shell: { maxWidth: 520, margin: "0 auto", minHeight: "100vh", background: paper, fontFamily: "'Inter', system-ui, sans-serif", color: ink, paddingBottom: 40, position: "relative" },
+  shell: { maxWidth: 520, margin: "0 auto", minHeight: "100vh", background: "linear-gradient(180deg,#F6FBF2 0%,#F3EFE6 55%,#FBF4EA 100%)", fontFamily: "'Inter', system-ui, sans-serif", color: ink, paddingBottom: 60, position: "relative" },
   loadDot: { width: 22, height: 22, borderRadius: "50%", border: `3px solid ${line}`, borderTopColor: accent, animation: "spin 0.8s linear infinite", margin: "0 auto" },
 
-  loginCard: { padding: "48px 28px", maxWidth: 380, margin: "0 auto", textAlign: "center" },
-  logoMark: { width: 56, height: 56, borderRadius: 16, background: accent, color: "#fff", display: "grid", placeItems: "center", margin: "0 auto 18px" },
-  loginTitle: { fontSize: 34, fontWeight: 800, letterSpacing: "-0.03em", margin: "0 0 6px" },
+  loginCard: { padding: "48px 28px", maxWidth: 380, margin: "0 auto", textAlign: "center", animation: "popIn 0.5s ease" },
+  logoMark: { width: 64, height: 64, borderRadius: 20, background: `linear-gradient(135deg,${lime},${accent})`, color: "#fff", display: "grid", placeItems: "center", margin: "0 auto 18px", boxShadow: "0 10px 30px rgba(31,157,85,0.35)", animation: "bob 3s ease-in-out infinite" },
+  loginTitle: { fontSize: 38, fontWeight: 800, letterSpacing: "-0.03em", margin: "0 0 6px", background: `linear-gradient(135deg,${accent},${lime})`, WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent", backgroundClip: "text" },
   loginSub: { fontSize: 14, color: "#6B6B5E", margin: "0 0 28px", lineHeight: 1.5 },
   errTxt: { color: "#C0392B", fontSize: 13.5, marginTop: 12 },
 
-  pinDot: { width: 14, height: 14, borderRadius: "50%", border: `2px solid ${line}`, background: "#fff" },
-  pinDotFull: { background: accent, borderColor: accent },
+  pinDot: { width: 14, height: 14, borderRadius: "50%", border: `2px solid ${line}`, background: "#fff", transition: "all 0.2s ease" },
+  pinDotFull: { background: accent, borderColor: accent, transform: "scale(1.2)" },
   keypad: { display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 10, marginTop: 6 },
-  key: { padding: "16px 0", fontSize: 20, fontWeight: 700, background: "#fff", border: `1px solid ${line}`, borderRadius: 12, cursor: "pointer", color: ink, display: "grid", placeItems: "center" },
+  key: { padding: "16px 0", fontSize: 20, fontWeight: 700, background: "#fff", border: `1px solid ${line}`, borderRadius: 14, cursor: "pointer", color: ink, display: "grid", placeItems: "center", boxShadow: "0 2px 6px rgba(0,0,0,0.04)" },
 
   header: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "22px 20px 14px" },
-  headTitle: { fontSize: 24, fontWeight: 800, letterSpacing: "-0.02em" },
+  headTitle: { fontSize: 26, fontWeight: 800, letterSpacing: "-0.02em", background: `linear-gradient(135deg,${accent},${lime})`, WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent", backgroundClip: "text" },
   headSub: { fontSize: 12, color: "#8A8475", textTransform: "uppercase", letterSpacing: "0.06em" },
-  exitBtn: { display: "flex", alignItems: "center", gap: 6, background: "transparent", border: `1px solid ${line}`, padding: "7px 12px", borderRadius: 10, fontSize: 13, color: ink, cursor: "pointer" },
+  exitBtn: { display: "flex", alignItems: "center", gap: 6, background: "#fff", border: `1px solid ${line}`, padding: "7px 12px", borderRadius: 10, fontSize: 13, color: ink, cursor: "pointer" },
 
-  alert: { display: "flex", alignItems: "center", gap: 8, margin: "0 20px 8px", padding: "11px 14px", background: "#FBEAE2", color: "#9C4A2A", borderRadius: 12, fontSize: 13 },
+  alert: { display: "flex", alignItems: "center", gap: 8, margin: "0 20px 8px", padding: "11px 14px", background: "#FFF1DA", color: "#B26A00", borderRadius: 12, fontSize: 13, animation: "popIn 0.3s ease" },
 
   tabs: { display: "flex", gap: 4, padding: "6px 16px 0", overflowX: "auto" },
-  tab: { padding: "9px 14px", border: "none", background: "transparent", fontSize: 13.5, fontWeight: 600, color: "#8A8475", cursor: "pointer", borderRadius: 9, whiteSpace: "nowrap" },
-  tabActive: { background: ink, color: "#fff" },
+  tab: { padding: "9px 14px", border: "none", background: "transparent", fontSize: 13.5, fontWeight: 600, color: "#8A8475", cursor: "pointer", borderRadius: 10, whiteSpace: "nowrap" },
+  tabActive: { background: `linear-gradient(135deg,${accent},${lime})`, color: "#fff", boxShadow: "0 4px 12px rgba(31,157,85,0.3)" },
 
   body: { padding: "16px 20px 0" },
   statGrid: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 8 },
-  stat: { background: "#fff", border: `1px solid ${line}`, borderRadius: 14, padding: "14px 15px" },
-  statAccent: { background: accent, border: `1px solid ${accent}` },
-  statIcon: { width: 30, height: 30, borderRadius: 9, background: "#EFE9DC", color: accent, display: "grid", placeItems: "center", marginBottom: 9 },
+  stat: { background: "#fff", border: `1px solid ${line}`, borderRadius: 16, padding: "14px 15px", animation: "rise 0.4s ease both", boxShadow: "0 4px 14px rgba(0,0,0,0.04)" },
+  statAccent: { background: `linear-gradient(135deg,${accent},${lime})`, border: "none", boxShadow: "0 8px 22px rgba(31,157,85,0.32)" },
+  statIcon: { width: 32, height: 32, borderRadius: 10, background: "#EAF7EE", color: accent, display: "grid", placeItems: "center", marginBottom: 9 },
   statLabel: { fontSize: 11.5, color: "#8A8475", marginBottom: 3 },
-  statValue: { fontSize: 21, fontWeight: 800, letterSpacing: "-0.02em" },
+  statValue: { fontSize: 22, fontWeight: 800, letterSpacing: "-0.02em" },
 
   sectionTitle: { fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", color: "#8A8475", margin: "22px 0 10px" },
   hint: { fontSize: 13, color: "#8A8475", margin: "-4px 0 12px", lineHeight: 1.5 },
   empty: { fontSize: 13.5, color: "#9A9384", textAlign: "center", padding: "20px 0" },
 
-  card: { display: "flex", alignItems: "center", gap: 12, background: "#fff", border: `1px solid ${line}`, borderRadius: 13, padding: "13px 15px" },
+  card: { display: "flex", alignItems: "center", gap: 12, background: "#fff", border: `1px solid ${line}`, borderRadius: 16, padding: "13px 15px", boxShadow: "0 3px 10px rgba(0,0,0,0.04)" },
   cardName: { fontSize: 15, fontWeight: 700, letterSpacing: "-0.01em" },
   cardMeta: { fontSize: 12.5, color: "#8A8475", marginTop: 2 },
-  lowTag: { fontSize: 10, background: "#FBEAE2", color: "#9C4A2A", padding: "2px 7px", borderRadius: 20, fontWeight: 700, marginLeft: 6, verticalAlign: "middle" },
+  lowTag: { fontSize: 10, background: "#FFE2E2", color: "#C0392B", padding: "2px 7px", borderRadius: 20, fontWeight: 700, marginLeft: 6, verticalAlign: "middle" },
 
   qtyCtrl: { display: "flex", alignItems: "center", gap: 8 },
   qtyCol: { display: "flex", flexDirection: "column", gap: 6 },
   qtyTiny: { minWidth: 30, textAlign: "center", fontSize: 11, color: "#8A8475", fontWeight: 600 },
-  qtyBtn: { width: 30, height: 30, borderRadius: 8, border: `1px solid ${line}`, background: paper, display: "grid", placeItems: "center", cursor: "pointer", color: ink },
+  qtyBtn: { width: 30, height: 30, borderRadius: 9, border: `1px solid ${line}`, background: "#F6FBF2", display: "grid", placeItems: "center", cursor: "pointer", color: accent },
   qtyNum: { minWidth: 28, textAlign: "center", fontWeight: 800, fontSize: 16 },
   delBtn: { background: "transparent", border: "none", color: "#C0392B", cursor: "pointer", padding: 4, display: "grid", placeItems: "center" },
-  editBtn: { background: "transparent", border: "none", color: "#3A7D5C", cursor: "pointer", padding: 4, display: "grid", placeItems: "center" },
+  editBtn: { background: "transparent", border: "none", color: accent, cursor: "pointer", padding: 4, display: "grid", placeItems: "center" },
 
-  sellBtn: { background: accent, color: "#fff", border: "none", padding: "10px 16px", borderRadius: 10, fontWeight: 700, fontSize: 14, cursor: "pointer" },
-  sellBtnOff: { background: "#D9D3C4", color: "#fff", cursor: "not-allowed" },
+  sellBtn: { background: `linear-gradient(135deg,${accent},${lime})`, color: "#fff", border: "none", padding: "10px 18px", borderRadius: 12, fontWeight: 800, fontSize: 14, cursor: "pointer", boxShadow: "0 4px 12px rgba(31,157,85,0.3)" },
+  sellBtnOff: { background: "#D9D3C4", color: "#fff", cursor: "not-allowed", boxShadow: "none" },
 
-  saleRow: { display: "flex", alignItems: "center", gap: 12, padding: "10px 14px", background: "#fff", border: `1px solid ${line}`, borderRadius: 11 },
+  saleRow: { display: "flex", alignItems: "center", gap: 12, padding: "10px 14px", background: "#fff", border: `1px solid ${line}`, borderRadius: 13 },
   saleName: { fontSize: 14, fontWeight: 700 },
   saleQty: { color: "#8A8475", fontWeight: 500 },
   titheTag: { fontSize: 11.5, color: accent, fontWeight: 600, marginTop: 1 },
 
-  reportHead: { display: "flex", alignItems: "center", gap: 12, background: ink, color: "#fff", padding: "16px 18px", borderRadius: 14, marginBottom: 14 },
+  reportHead: { display: "flex", alignItems: "center", gap: 12, background: `linear-gradient(135deg,${grape},${berry})`, color: "#fff", padding: "16px 18px", borderRadius: 16, marginBottom: 14, boxShadow: "0 8px 22px rgba(124,92,214,0.3)" },
 
-  btn: { display: "flex", alignItems: "center", justifyContent: "center", gap: 8, border: "none", padding: "13px 16px", borderRadius: 12, fontSize: 14.5, fontWeight: 700, cursor: "pointer" },
-  btnDark: { background: ink, color: "#fff" },
+  btn: { display: "flex", alignItems: "center", justifyContent: "center", gap: 8, border: "none", padding: "14px 16px", borderRadius: 14, fontSize: 14.5, fontWeight: 800, cursor: "pointer" },
+  btnDark: { background: `linear-gradient(135deg,${accent},${lime})`, color: "#fff", boxShadow: "0 6px 16px rgba(31,157,85,0.3)" },
   btnGhost: { background: "#fff", color: ink, border: `1px solid ${line}` },
 
   fieldWrap: { display: "block", marginBottom: 12, textAlign: "left" },
@@ -968,7 +996,7 @@ const S = {
   cardPop: { animation: "pop 0.25s ease", transition: "transform 0.12s ease, box-shadow 0.12s ease" },
   cardInCart: { borderColor: accent, boxShadow: "0 0 0 1px #3A7D5C inset" },
   cartBadge: { fontSize: 10, background: accent, color: "#fff", padding: "2px 8px", borderRadius: 20, fontWeight: 700, marginLeft: 8, verticalAlign: "middle" },
-  cartFab: { position: "fixed", bottom: 22, left: "50%", transform: "translateX(-50%)", display: "flex", alignItems: "center", gap: 4, background: accent, color: "#fff", border: "none", padding: "14px 22px", borderRadius: 30, fontSize: 15, cursor: "pointer", boxShadow: "0 8px 24px rgba(58,125,92,0.4)", zIndex: 55, animation: "rise 0.3s ease" },
+  cartFab: { position: "fixed", bottom: 22, left: 0, right: 0, marginLeft: "auto", marginRight: "auto", width: "fit-content", display: "flex", alignItems: "center", gap: 4, background: `linear-gradient(135deg,${accent},${lime})`, color: "#fff", border: "none", padding: "14px 24px", borderRadius: 30, fontSize: 15, cursor: "pointer", boxShadow: "0 10px 28px rgba(31,157,85,0.45)", zIndex: 55, animation: "popIn 0.3s ease" },
   cartFabCount: { background: "#fff", color: accent, borderRadius: "50%", minWidth: 22, height: 22, display: "grid", placeItems: "center", fontSize: 12, fontWeight: 800, marginLeft: 4 },
   cartLine: { display: "flex", alignItems: "center", gap: 10, background: "#fff", border: `1px solid ${line}`, borderRadius: 11, padding: "10px 13px" },
   cartTotalRow: { display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 18, fontWeight: 800, padding: "12px 14px", background: "#EFE9DC", borderRadius: 11 },
@@ -983,10 +1011,12 @@ if (typeof document !== "undefined" && !document.getElementById("sf-spin")) {
   st.textContent = `
     @keyframes spin{to{transform:rotate(360deg)}}
     @keyframes pop{0%{transform:scale(0.97);opacity:0.6}100%{transform:scale(1);opacity:1}}
-    @keyframes rise{0%{transform:translate(-50%,40px);opacity:0}100%{transform:translate(-50%,0);opacity:1}}
+    @keyframes rise{0%{transform:translateY(14px);opacity:0}100%{transform:translateY(0);opacity:1}}
     @keyframes popIn{0%{transform:scale(0.9);opacity:0}100%{transform:scale(1);opacity:1}}
+    @keyframes bob{0%,100%{transform:translateY(0)}50%{transform:translateY(-6px)}}
     button{transition:transform 0.08s ease, filter 0.12s ease}
     button:active{transform:scale(0.95)}
+    button:hover{filter:brightness(1.05)}
   `;
   document.head.appendChild(st);
 }
