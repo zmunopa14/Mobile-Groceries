@@ -164,8 +164,10 @@ function Login({ onLogin }) {
   };
 
   return (
-    <div style={S.shell}>
-      <div style={S.loginCard}>
+    <div style={{ ...S.shell, overflow: "hidden" }}>
+      <MarketWatermark />
+      <div style={{ ...S.loginCard, position: "relative", zIndex: 1 }}>
+        <HeroImage />
         <div style={S.logoMark}><Box size={26} strokeWidth={2.4} /></div>
         <h1 style={S.loginTitle}>Pamusika</h1>
         <p style={S.loginSub}>Enter your name and PIN to sign in.</p>
@@ -257,6 +259,16 @@ function Admin({ user, onExit, businessName }) {
   const cash = totalSales - totalTithe;
   const low = products.filter((p) => p.qty <= p.low_at);
 
+  const deleteSale = async (s) => {
+    const label = s.invoice_no ? `invoice ${s.invoice_no} (all its items)` : `this sale of ${s.product_name}`;
+    if (!window.confirm(`Remove ${label}? The stock will be returned to inventory.`)) return;
+    try {
+      if (s.invoice_no) await sb.rpc("delete_invoice", { p_invoice_no: s.invoice_no });
+      else await sb.rpc("delete_sale", { p_sale_id: s.id });
+      await refresh();
+    } catch (e) { alert(e.message); }
+  };
+
   return (
     <div style={S.shell}>
       <Header title={businessName} sub={`${user.name} · Admin`} onExit={onExit} onRefresh={refresh} />
@@ -280,7 +292,8 @@ function Admin({ user, onExit, businessName }) {
               <Stat icon={<Package size={16} />} label="Items in stock" value={products.reduce((a,p)=>a+p.qty,0)} tint={sky} delay={0.15} />
             </div>
             <SectionTitle>Recent sales</SectionTitle>
-            <SalesList sales={sales.slice(0,12)} showSeller />
+            <p style={S.hint}>Tap the ✕ to remove a sale — its stock is returned automatically.</p>
+            <SalesList sales={sales.slice(0,20)} showSeller onDelete={deleteSale} />
           </>}
           {tab === "stock" && <StockManager products={products} onChange={refresh} businessId={user.business_id} />}
           {tab === "report" && <Report sales={sales} totalSales={totalSales} totalTithe={totalTithe} cash={cash} low={low} />}
@@ -320,17 +333,22 @@ function Seller({ user, onExit, businessName }) {
   const cartTotal = cart.reduce((a, c) => a + c.units * Number(c.product.price), 0);
   const cartCount = cart.reduce((a, c) => a + c.units, 0);
 
-  const checkout = async () => {
+  const checkout = async ({ customer, phone } = {}) => {
     if (cart.length === 0) return;
     try {
       const items = cart.map((c) => ({ product_id: c.product.id, qty: c.units }));
-      const inv = await sb.rpc("record_invoice", { p_items: items, p_seller: user.name });
+      const inv = await sb.rpc("record_invoice", {
+        p_items: items, p_seller: user.name,
+        p_customer: customer || null, p_phone: phone || null,
+      });
       const invoiceNo = typeof inv === "string" ? inv : (inv && inv[0]) || "INV";
       setReceipt({
         no: invoiceNo,
         when: new Date(),
         seller: user.name,
         business: businessName,
+        customer: customer || "",
+        phone: phone || "",
         lines: cart.map((c) => ({
           name: c.product.name, units: c.units,
           price: Number(c.product.price), pack_size: c.product.pack_size || 1,
@@ -439,7 +457,9 @@ function AddToCartModal({ product, onClose, onAdd }) {
 function CartModal({ cart, total, onClose, onRemove, onCheckout }) {
   const [busy, setBusy] = useState(false);
   const [received, setReceived] = useState("");
-  const go = async () => { setBusy(true); await onCheckout(); setBusy(false); };
+  const [customer, setCustomer] = useState("");
+  const [phone, setPhone] = useState("");
+  const go = async () => { setBusy(true); await onCheckout({ customer: customer.trim(), phone: phone.trim() }); setBusy(false); };
 
   const recNum = parseFloat(received);
   const hasReceived = received !== "" && !isNaN(recNum);
@@ -467,9 +487,11 @@ function CartModal({ cart, total, onClose, onRemove, onCheckout }) {
         <span>{money(total)}</span>
       </div>
 
-      <div style={{ marginTop: 12 }}>
-        <Field label="Amount received from customer ($)" value={received} onChange={setReceived} type="number" placeholder="0.00" />
+      <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
+        <Field label="Customer name" value={customer} onChange={setCustomer} placeholder="e.g. Mrs Moyo" />
+        <Field label="Phone" value={phone} onChange={setPhone} type="tel" placeholder="077…" />
       </div>
+      <Field label="Amount received from customer ($)" value={received} onChange={setReceived} type="number" placeholder="0.00" />
       {hasReceived && (
         <div style={{ ...S.cartTotalRow, background: shortfall ? "#FFE2E2" : "#EAF7EE", color: shortfall ? "#C0392B" : accent }}>
           <span>{shortfall ? "Still owing" : "Change to give"}</span>
@@ -503,6 +525,11 @@ function ReceiptModal({ receipt, onClose }) {
           <div style={S.cardMeta}>{receipt.when.toLocaleString()}</div>
         </div>
         <div style={S.receiptDivider} />
+        {receipt.customer && (
+          <div style={{ ...S.cardMeta, marginBottom: 6 }}>
+            Customer: <b style={{ color: ink }}>{receipt.customer}</b>{receipt.phone ? ` · ${receipt.phone}` : ""}
+          </div>
+        )}
         {receipt.lines.map((l, i) => (
           <div key={i} style={S.receiptLine}>
             <span style={{ flex: 1 }}>{l.name} <span style={{ color: "#8A8475" }}>×{l.units}</span></span>
@@ -526,7 +553,8 @@ function ReceiptModal({ receipt, onClose }) {
 
 function receiptText(r) {
   const lines = r.lines.map((l) => `${l.name} x${l.units}  ${money(l.total)}`).join("\n");
-  return `${r.business}\nReceipt ${r.no}\n${r.when.toLocaleString()}\n\n${lines}\n\nTOTAL: ${money(r.total)}\nServed by ${r.seller}\nThank you!`;
+  const cust = r.customer ? `\nCustomer: ${r.customer}${r.phone ? ` (${r.phone})` : ""}` : "";
+  return `${r.business}\nReceipt ${r.no}\n${r.when.toLocaleString()}${cust}\n\n${lines}\n\nTOTAL: ${money(r.total)}\nServed by ${r.seller}\nThank you!`;
 }
 
 // ============================================================
@@ -836,7 +864,7 @@ function Stat({ icon, label, value, accent, tint, delay = 0 }) {
     </div>
   );
 }
-function SalesList({ sales, showSeller }) {
+function SalesList({ sales, showSeller, onDelete }) {
   if (!sales.length) return <p style={S.empty}>No sales yet.</p>;
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
@@ -847,12 +875,16 @@ function SalesList({ sales, showSeller }) {
             <div style={S.cardMeta}>
               {new Date(s.sold_at).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
               {showSeller && ` · ${s.seller_name}`}
+              {s.customer_name && ` · ${s.customer_name}`}
             </div>
           </div>
           <div style={{ textAlign: "right" }}>
             <div style={S.saleName}>{money(s.total)}</div>
             <div style={S.titheTag}>{money(s.tithe)} tithe</div>
           </div>
+          {onDelete && (
+            <button style={S.delBtn} onClick={() => onDelete(s)} title="Remove this sale"><X size={16} /></button>
+          )}
         </div>
       ))}
     </div>
@@ -891,6 +923,33 @@ function Modal({ children, onClose, title }) {
     </div>
   );
 }
+function MarketWatermark() {
+  // Subtle code-drawn grocery scene, sits faintly behind the login
+  return (
+    <svg viewBox="0 0 400 300" style={S.watermark} aria-hidden="true">
+      <g fill="none" stroke={accent} strokeWidth="2" opacity="0.5">
+        <circle cx="70" cy="90" r="26" />
+        <circle cx="120" cy="80" r="20" />
+        <path d="M40 130 h80 l-10 50 h-60 z" />
+        <rect x="250" y="70" width="90" height="60" rx="8" />
+        <path d="M250 95 h90 M280 70 v60 M310 70 v60" />
+        <path d="M60 230 q40 -30 80 0 q40 30 80 0" />
+        <circle cx="300" cy="210" r="18" />
+        <path d="M300 192 q6 -10 14 -6" />
+      </g>
+    </svg>
+  );
+}
+function HeroImage() {
+  // If you add an image named hero.jpg to the project's public folder,
+  // it shows here. Until then, nothing renders (no broken image).
+  const [ok, setOk] = useState(true);
+  if (!ok) return null;
+  return (
+    <img src="/hero.jpg" alt="" onError={() => setOk(false)}
+      style={{ width: "100%", maxHeight: 160, objectFit: "cover", borderRadius: 18, marginBottom: 18, boxShadow: "0 8px 24px rgba(0,0,0,0.12)" }} />
+  );
+}
 function SetupNotice() {
   return (
     <div style={S.shell}>
@@ -917,6 +976,7 @@ const S = {
   loadDot: { width: 22, height: 22, borderRadius: "50%", border: `3px solid ${line}`, borderTopColor: accent, animation: "spin 0.8s linear infinite", margin: "0 auto" },
 
   loginCard: { padding: "48px 28px", maxWidth: 380, margin: "0 auto", textAlign: "center", animation: "popIn 0.5s ease" },
+  watermark: { position: "absolute", top: 80, left: "50%", transform: "translateX(-50%)", width: 460, maxWidth: "120%", opacity: 0.06, pointerEvents: "none", zIndex: 0 },
   logoMark: { width: 64, height: 64, borderRadius: 20, background: `linear-gradient(135deg,${lime},${accent})`, color: "#fff", display: "grid", placeItems: "center", margin: "0 auto 18px", boxShadow: "0 10px 30px rgba(31,157,85,0.35)", animation: "bob 3s ease-in-out infinite" },
   loginTitle: { fontSize: 38, fontWeight: 800, letterSpacing: "-0.03em", margin: "0 0 6px", background: `linear-gradient(135deg,${accent},${lime})`, WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent", backgroundClip: "text" },
   loginSub: { fontSize: 14, color: "#6B6B5E", margin: "0 0 28px", lineHeight: 1.5 },
