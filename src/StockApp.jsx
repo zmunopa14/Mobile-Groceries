@@ -102,6 +102,37 @@ function filterProducts(products, search) {
   return products.filter((p) => p.name.toLowerCase().includes(q));
 }
 
+// Parse a pasted price list into products.
+function parsePriceList(text) {
+  const out = [];
+  const lines = text.split("\n");
+  for (let raw of lines) {
+    let line = raw.trim();
+    if (!line) continue;
+    if (/^[*_].*[*_]$/.test(line)) continue; // *Category* headers
+    if (/^-\s*\w/.test(line) && !/[\d.]|out of stock/i.test(line)) continue; // sub-headers like "- Noodles"
+    line = line.replace(/^[-•*]\s*/, "");
+
+    const m = line.split(/\s[–-]\s/);
+    if (m.length < 2) continue;
+    const price = m.slice(1).join(" - ").trim();
+    let name = m[0].trim();
+
+    const outOfStock = /out\s*of\s*stock/i.test(price);
+    let packSize = 1;
+    const packMatch = (name + " " + price).match(/(\d+)\s*pack/i);
+    if (packMatch) packSize = parseInt(packMatch[1]) || 1;
+
+    let dollars = 0;
+    if (!outOfStock) {
+      const pm = price.match(/([\d]+(?:\.[\d]+)?)/);
+      dollars = pm ? parseFloat(pm[1]) : 0;
+    }
+    out.push({ name, price: dollars, pack_size: packSize, qty: 0, outOfStock });
+  }
+  return out;
+}
+
 // Build a list of past customers (most recent phone per name) from sales
 function customerHistory(sales) {
   const map = {};
@@ -749,6 +780,7 @@ function localDateStr(d) {
 // ============================================================
 function StockManager({ products, onChange, businessId }) {
   const [open, setOpen] = useState(false);
+  const [bulk, setBulk] = useState(false);
   const [editing, setEditing] = useState(null); // product being edited
   const [search, setSearch] = useState("");
   const [f, setF] = useState({ name: "", price: "", pct: "", packs: "", units: "", pack_size: "1", low: "5" });
@@ -808,6 +840,9 @@ function StockManager({ products, onChange, businessId }) {
       <button style={{ ...S.btn, ...S.btnDark, width: "100%", marginBottom: 10 }} onClick={() => setOpen(true)}>
         <Plus size={18} /> Add new product
       </button>
+      <button style={{ ...S.btn, ...S.btnGhost, width: "100%", marginBottom: 10 }} onClick={() => setBulk(true)}>
+        <FileText size={17} /> Bulk add from a list
+      </button>
       {products.length > 0 && (
         <button style={{ ...S.btn, ...S.btnGhost, width: "100%", marginBottom: 14 }} disabled={copying} onClick={copyToOther}>
           {copying ? "Copying…" : `Copy these products to Business ${otherBusiness}`}
@@ -853,7 +888,85 @@ function StockManager({ products, onChange, businessId }) {
         </Modal>
       )}
       {editing && <EditProductModal product={editing} onClose={() => setEditing(null)} onSave={saveEdit} />}
+      {bulk && <BulkAddModal businessId={businessId} onClose={() => setBulk(false)} onDone={async () => { setBulk(false); await onChange(); }} />}
     </>
+  );
+}
+
+// Paste a price list, review, and add many products at once
+function BulkAddModal({ businessId, onClose, onDone }) {
+  const [text, setText] = useState("");
+  const [items, setItems] = useState(null); // parsed preview
+  const [busy, setBusy] = useState(false);
+
+  const parse = () => setItems(parsePriceList(text));
+  const updateItem = (i, field, val) =>
+    setItems((prev) => prev.map((it, j) => j === i ? { ...it, [field]: val } : it));
+  const removeItem = (i) => setItems((prev) => prev.filter((_, j) => j !== i));
+
+  const save = async () => {
+    if (!items || items.length === 0) return;
+    setBusy(true);
+    try {
+      const rows = items.map((it) => ({
+        name: it.name,
+        price: parseFloat(it.price) || 0,
+        tithe_pct: 0,
+        qty: parseInt(it.qty) || 0,
+        pack_size: parseInt(it.pack_size) || 1,
+        low_at: 5,
+        business_id: businessId,
+      }));
+      await sb.insert("products", rows);
+      alert(`Added ${rows.length} products.`);
+      onDone();
+    } catch (e) { alert(e.message); }
+    setBusy(false);
+  };
+
+  return (
+    <Modal onClose={onClose} title="Bulk add products">
+      {!items ? (
+        <>
+          <p style={{ ...S.hint, marginTop: 0 }}>
+            Paste your list. One product per line, like “Zimnax – $1.50” or “Frimax – Out of stock”.
+            Category lines like *Snacks* are ignored.
+          </p>
+          <textarea style={{ ...S.input, minHeight: 200, fontFamily: "inherit" }} value={text}
+            onChange={(e) => setText(e.target.value)} placeholder={"Zimnax – $1.50\nZapnax – $2.50\nFrimax – Out of stock"} />
+          <button style={{ ...S.btn, ...S.btnDark, width: "100%", marginTop: 10 }} disabled={!text.trim()} onClick={parse}>
+            Preview {text.trim() ? `(${parsePriceList(text).length})` : ""}
+          </button>
+        </>
+      ) : (
+        <>
+          <p style={{ ...S.hint, marginTop: 0 }}>
+            Review and fix anything, then save. You can set stock (packs) now or later. Out-of-stock items came in at $0.
+          </p>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: "45vh", overflowY: "auto", marginBottom: 10 }}>
+            {items.map((it, i) => (
+              <div key={i} style={{ ...S.cartLine, gap: 6, flexWrap: "wrap" }}>
+                <input style={{ ...S.input, flex: "1 1 100%", padding: "8px 10px" }} value={it.name}
+                  onChange={(e) => updateItem(i, "name", e.target.value)} />
+                <input style={{ ...S.input, width: 70, padding: "8px 10px" }} type="number" value={it.price}
+                  title="price" onChange={(e) => updateItem(i, "price", e.target.value)} />
+                <input style={{ ...S.input, width: 70, padding: "8px 10px" }} type="number" value={it.pack_size}
+                  title="pack size label" onChange={(e) => updateItem(i, "pack_size", e.target.value)} />
+                <input style={{ ...S.input, width: 70, padding: "8px 10px" }} type="number" value={it.qty}
+                  title="opening packs" placeholder="packs" onChange={(e) => updateItem(i, "qty", e.target.value)} />
+                <button style={S.delBtn} onClick={() => removeItem(i)}><X size={16} /></button>
+              </div>
+            ))}
+            {items.length === 0 && <p style={S.empty}>Nothing recognised. Go back and check the format.</p>}
+          </div>
+          <div style={{ ...S.cardMeta, marginBottom: 8 }}>Columns: name · price · pack-size label · opening packs</div>
+          <button style={{ ...S.btn, ...S.btnDark, width: "100%" }} disabled={busy || items.length === 0} onClick={save}>
+            <Check size={18} /> {busy ? "Adding…" : `Add ${items.length} products`}
+          </button>
+          <button style={{ ...S.btn, ...S.btnGhost, width: "100%", marginTop: 8 }} onClick={() => setItems(null)}>Back to paste</button>
+        </>
+      )}
+    </Modal>
   );
 }
 
@@ -1056,6 +1169,7 @@ function EditInvoiceModal({ invoice, products, onClose, onChange }) {
 function CashUps({ businessId }) {
   const [reports, setReports] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [editing, setEditing] = useState(null);
 
   const load = useCallback(async () => {
     try {
@@ -1069,9 +1183,18 @@ function CashUps({ businessId }) {
     await sb.patch("day_reports", `id=eq.${id}`, { confirmed: true });
     await load();
   };
+  const reopen = async (id) => {
+    await sb.patch("day_reports", `id=eq.${id}`, { confirmed: false });
+    await load();
+  };
   const remove = async (id) => {
-    if (!window.confirm("Delete this cash-up report?")) return;
+    if (!window.confirm("Delete this cash-up report? This cannot be undone.")) return;
     await sb.del("day_reports", `id=eq.${id}`);
+    await load();
+  };
+  const saveEdit = async (id, fields) => {
+    await sb.patch("day_reports", `id=eq.${id}`, fields);
+    setEditing(null);
     await load();
   };
 
@@ -1097,7 +1220,8 @@ function CashUps({ businessId }) {
                   </div>
                   <div style={S.cardMeta}>{new Date(r.report_date).toLocaleDateString()} · {r.tx_count} sale{r.tx_count === 1 ? "" : "s"}</div>
                 </div>
-                {!r.confirmed && <button style={S.delBtn} onClick={() => remove(r.id)}><X size={16} /></button>}
+                <button style={S.editBtn} onClick={() => setEditing(r)}><Pencil size={15} /></button>
+                <button style={S.delBtn} onClick={() => remove(r.id)}><X size={16} /></button>
               </div>
               <div style={{ display: "flex", gap: 8 }}>
                 <div style={{ ...S.miniStat }}><div style={S.miniLabel}>Sales</div><div style={S.miniVal}>{money(r.sales_total)}</div></div>
@@ -1108,16 +1232,47 @@ function CashUps({ businessId }) {
                 </div>
               </div>
               {r.note && <div style={S.cardMeta}>Note: {r.note}</div>}
-              {!r.confirmed && (
-                <button style={{ ...S.btn, ...S.btnDark, width: "100%" }} onClick={() => confirm(r.id)}>
-                  <Check size={17} /> Confirm this cash-up
-                </button>
-              )}
+              {r.confirmed
+                ? <button style={{ ...S.btn, ...S.btnGhost, width: "100%" }} onClick={() => reopen(r.id)}>Re-open (mark pending)</button>
+                : <button style={{ ...S.btn, ...S.btnDark, width: "100%" }} onClick={() => confirm(r.id)}>
+                    <Check size={17} /> Confirm this cash-up
+                  </button>}
             </div>
           );
         })}
       </div>
+      {editing && <EditCashUpModal report={editing} onClose={() => setEditing(null)} onSave={saveEdit} />}
     </>
+  );
+}
+
+// Admin edits a cash-up's figures
+function EditCashUpModal({ report, onClose, onSave }) {
+  const [sales, setSales] = useState(String(report.sales_total));
+  const [cash, setCash] = useState(String(report.cash_in_hand));
+  const [note, setNote] = useState(report.note || "");
+  const [busy, setBusy] = useState(false);
+
+  const save = async () => {
+    setBusy(true);
+    await onSave(report.id, {
+      sales_total: parseFloat(sales) || 0,
+      cash_in_hand: parseFloat(cash) || 0,
+      note: note.trim() || null,
+    });
+    setBusy(false);
+  };
+
+  return (
+    <Modal onClose={onClose} title={`Edit cash-up — ${report.seller_name}`}>
+      <p style={{ ...S.hint, marginTop: 0 }}>{new Date(report.report_date).toLocaleDateString()}</p>
+      <Field label="Sales total ($)" value={sales} onChange={setSales} type="number" />
+      <Field label="Cash in hand ($)" value={cash} onChange={setCash} type="number" />
+      <Field label="Note" value={note} onChange={setNote} placeholder="optional" />
+      <button style={{ ...S.btn, ...S.btnDark, width: "100%", marginTop: 4 }} disabled={busy} onClick={save}>
+        <Check size={18} /> {busy ? "Saving…" : "Save changes"}
+      </button>
+    </Modal>
   );
 }
 
