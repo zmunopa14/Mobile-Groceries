@@ -278,23 +278,26 @@ function Login({ onLogin }) {
   };
 
   return (
-    <div style={{ ...S.shell, overflow: "hidden" }}>
+    <div style={S.loginDarkShell}>
       <MarketWatermark />
       <div style={{ ...S.loginCard, position: "relative", zIndex: 1 }}>
         <HeroImage />
-        <div style={S.logoMark}><Box size={26} strokeWidth={2.4} /></div>
+        <div style={S.logoMark}><Box size={24} strokeWidth={2.4} /></div>
         <h1 style={S.loginTitle}>Pamusika</h1>
         <p style={S.loginSub}>Enter your name and PIN to sign in.</p>
 
-        <Field label="Name" value={name} onChange={setName} placeholder="e.g. Mum" />
         <div style={S.fieldWrap}>
-          <span style={S.fieldLabel}>PIN</span>
+          <span style={{ ...S.fieldLabel, color: "rgba(234,243,236,0.8)" }}>Name</span>
+          <input style={S.inputDark} value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Mum" />
+        </div>
+        <div style={S.fieldWrap}>
+          <span style={{ ...S.fieldLabel, color: "rgba(234,243,236,0.8)" }}>PIN</span>
           <PinDots value={pin} />
         </div>
-        <Keypad value={pin} onChange={setPin} />
+        <Keypad value={pin} onChange={setPin} dark />
 
         {err && <p style={S.errTxt}>{err}</p>}
-        <button style={{ ...S.btn, ...S.btnDark, width: "100%", marginTop: 10 }}
+        <button style={{ ...S.btn, ...S.btnGold, width: "100%", marginTop: 10 }}
           disabled={busy || !name.trim() || pin.length < 4} onClick={submit}>
           {busy ? "Checking…" : "Sign in"}
         </button>
@@ -313,7 +316,7 @@ function PinDots({ value }) {
   );
 }
 
-function Keypad({ value, onChange }) {
+function Keypad({ value, onChange, dark }) {
   const press = (k) => {
     if (k === "del") onChange(value.slice(0, -1));
     else if (value.length < 4) onChange(value + k);
@@ -322,7 +325,7 @@ function Keypad({ value, onChange }) {
     <div style={S.keypad}>
       {["1","2","3","4","5","6","7","8","9","","0","del"].map((k, i) =>
         k === "" ? <div key={i} /> :
-        <button key={i} style={S.key} onClick={() => press(k)}>
+        <button key={i} style={{ ...S.key, ...(dark ? S.keyDark : {}) }} onClick={() => press(k)}>
           {k === "del" ? <Delete size={18} /> : k}
         </button>
       )}
@@ -409,6 +412,7 @@ function Admin({ user, onExit, businessName }) {
 
   return (
     <div style={S.shell}>
+      <LightWatermark />
       <Header title={businessName} sub={`${user.name} · Admin`} onExit={onExit} onRefresh={refresh} />
       {error && <div style={S.alert}><AlertTriangle size={16} /> {error}</div>}
       {out.length > 0 && (
@@ -557,6 +561,7 @@ function Seller({ user, onExit, businessName }) {
 
   return (
     <div style={S.shell}>
+      <LightWatermark />
       <Header title={user.name} sub={`${businessName} · Seller`} onExit={onExit} onRefresh={refresh} />
       {error && <div style={S.alert}><AlertTriangle size={16} /> {error}</div>}
       {!online && (
@@ -2069,31 +2074,122 @@ function Modal({ children, onClose, title }) {
     </div>
   );
 }
-function MarketWatermark() {
-  // Subtle code-drawn grocery scene, sits faintly behind the login
+function LightWatermark() {
   return (
-    <svg viewBox="0 0 400 300" style={S.watermark} aria-hidden="true">
-      <g fill="none" stroke={accent} strokeWidth="2" opacity="0.5">
-        <circle cx="70" cy="90" r="26" />
-        <circle cx="120" cy="80" r="20" />
-        <path d="M40 130 h80 l-10 50 h-60 z" />
-        <rect x="250" y="70" width="90" height="60" rx="8" />
-        <path d="M250 95 h90 M280 70 v60 M310 70 v60" />
-        <path d="M60 230 q40 -30 80 0 q40 30 80 0" />
-        <circle cx="300" cy="210" r="18" />
-        <path d="M300 192 q6 -10 14 -6" />
+    <svg viewBox="0 0 400 520" style={S.watermarkLight} aria-hidden="true" preserveAspectRatio="xMidYMid slice">
+      <g fill="none" stroke={accent} strokeWidth="2">
+        {Array.from({ length: 5 }).map((_, r) =>
+          Array.from({ length: 4 }).map((_, c) => {
+            const x = 40 + c * 100, y = 50 + r * 110;
+            const k = (r + c) % 3;
+            if (k === 0) return <g key={`${r}-${c}`}><circle cx={x} cy={y} r="15" /><path d={`M${x} ${y - 15} q4 -8 10 -5`} /></g>;
+            if (k === 1) return <path key={`${r}-${c}`} d={`M${x - 16} ${y - 10} h32 l-5 26 h-22 z`} />;
+            return <g key={`${r}-${c}`}><rect x={x - 16} y={y - 12} width="32" height="22" rx="4" /><path d={`M${x - 16} ${y - 3} h32`} /></g>;
+          })
+        )}
       </g>
     </svg>
   );
 }
+
+function MarketWatermark() {
+  // Faint repeating grocery icons behind the dark login
+  return (
+    <svg viewBox="0 0 400 600" style={S.watermark} aria-hidden="true" preserveAspectRatio="xMidYMid slice">
+      <g fill="none" stroke="#CDE8C4" strokeWidth="2" opacity="0.5">
+        {Array.from({ length: 6 }).map((_, r) =>
+          Array.from({ length: 4 }).map((_, c) => {
+            const x = 30 + c * 100, y = 40 + r * 100;
+            const k = (r + c) % 3;
+            if (k === 0) return <g key={`${r}-${c}`}><circle cx={x} cy={y} r="14" /><path d={`M${x} ${y - 14} q4 -8 10 -5`} /></g>;
+            if (k === 1) return <path key={`${r}-${c}`} d={`M${x - 16} ${y - 10} h32 l-5 26 h-22 z`} />;
+            return <g key={`${r}-${c}`}><rect x={x - 16} y={y - 12} width="32" height="22" rx="4" /><path d={`M${x - 16} ${y - 3} h32`} /></g>;
+          })
+        )}
+      </g>
+    </svg>
+  );
+}
+
+function DeliveryScene() {
+  // Code-drawn animated scene: delivery van, seller handing a grocery bag,
+  // customer handing money back. No external image needed.
+  return (
+    <div style={S.heroWrap}>
+      <svg viewBox="0 0 360 200" style={{ width: "100%", display: "block" }} aria-hidden="true">
+        <defs>
+          <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stopColor="#11342a" />
+            <stop offset="1" stopColor="#0c241d" />
+          </linearGradient>
+          <linearGradient id="van" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stopColor="#2bd07a" />
+            <stop offset="1" stopColor="#1f9d55" />
+          </linearGradient>
+        </defs>
+
+        {/* ground */}
+        <rect x="0" y="0" width="360" height="200" fill="url(#sky)" />
+        <line x1="0" y1="165" x2="360" y2="165" stroke="#1c4d3d" strokeWidth="2" />
+
+        {/* sun/coin glow */}
+        <circle cx="300" cy="45" r="26" fill="#F5C443" opacity="0.18" />
+        <circle cx="300" cy="45" r="15" fill="#F5C443" opacity="0.30" />
+
+        {/* delivery van */}
+        <g>
+          <rect x="18" y="92" width="78" height="46" rx="6" fill="url(#van)" />
+          <rect x="96" y="104" width="34" height="34" rx="6" fill="url(#van)" />
+          <rect x="100" y="108" width="22" height="16" rx="3" fill="#d8fbe6" opacity="0.85" />
+          <text x="40" y="122" fontSize="13" fontWeight="800" fill="#0c241d" fontFamily="Inter, sans-serif">FRESH</text>
+          <circle cx="44" cy="142" r="11" fill="#0c241d" stroke="#2bd07a" strokeWidth="3" />
+          <circle cx="110" cy="142" r="11" fill="#0c241d" stroke="#2bd07a" strokeWidth="3" />
+        </g>
+
+        {/* seller */}
+        <g>
+          <circle cx="170" cy="96" r="9" fill="#F5C443" />
+          <rect x="162" y="106" width="16" height="30" rx="7" fill="#2bd07a" />
+          {/* seller arm holding the bag, gentle hand-off motion */}
+          <g style={{ transformOrigin: "172px 116px", animation: "handoff 3.2s ease-in-out infinite" }}>
+            <line x1="176" y1="114" x2="198" y2="120" stroke="#F5C443" strokeWidth="4" strokeLinecap="round" />
+            {/* grocery bag */}
+            <path d="M196 116 h16 l3 20 h-22 z" fill="#C98A3A" />
+            <path d="M200 116 q4 -6 8 0" fill="none" stroke="#C98A3A" strokeWidth="2" />
+            <circle cx="201" cy="126" r="2" fill="#2bd07a" />
+            <circle cx="207" cy="124" r="2" fill="#E0457B" />
+            <circle cx="211" cy="128" r="2" fill="#F5C443" />
+          </g>
+        </g>
+
+        {/* customer */}
+        <g>
+          <circle cx="246" cy="98" r="9" fill="#F2C9A0" />
+          <rect x="238" y="108" width="16" height="28" rx="7" fill="#2FA7D8" />
+          {/* customer arm handing money */}
+          <g style={{ transformOrigin: "242px 118px", animation: "handoff 3.2s ease-in-out infinite reverse" }}>
+            <line x1="238" y1="116" x2="220" y2="122" stroke="#F2C9A0" strokeWidth="4" strokeLinecap="round" />
+            <rect x="208" y="117" width="16" height="10" rx="2" fill="#7CC243" stroke="#0c241d" strokeWidth="1" />
+            <text x="212" y="125" fontSize="7" fontWeight="800" fill="#0c241d" fontFamily="Inter, sans-serif">$</text>
+          </g>
+        </g>
+
+        {/* floating exchange sparkle */}
+        <g opacity="0.9">
+          <circle cx="215" cy="100" r="2" fill="#F5C443" style={{ animation: "rise 2.6s ease-in-out infinite" }} />
+        </g>
+      </svg>
+    </div>
+  );
+}
+
 function HeroImage() {
-  // If you add an image named hero.jpg to the project's public folder,
-  // it shows here. Until then, nothing renders (no broken image).
+  // Optional real photo: drop hero.jpg into the project to use it instead.
   const [ok, setOk] = useState(true);
-  if (!ok) return null;
+  if (!ok) return <DeliveryScene />;
   return (
     <img src="/hero.jpg" alt="" onError={() => setOk(false)}
-      style={{ width: "100%", maxHeight: 160, objectFit: "cover", borderRadius: 18, marginBottom: 18, boxShadow: "0 8px 24px rgba(0,0,0,0.12)" }} />
+      style={{ width: "100%", maxHeight: 170, objectFit: "cover", borderRadius: 18, marginBottom: 4, boxShadow: "0 12px 30px rgba(0,0,0,0.4)" }} />
   );
 }
 function SetupNotice() {
@@ -2117,49 +2213,6 @@ function SetupNotice() {
 // ============================================================
 const ink = "#152019", paper = "#F3EFE6", accent = "#1F9D55", line = "#E2DCCD";
 const lime = "#7CC243", mango = "#F5A623", berry = "#E0457B", sky = "#2FA7D8", grape = "#7C5CD6";
+const gold = "#C9A227", goldLt = "#E6C44D", darkbg = "#0c241d", darkbg2 = "#11342a", darkcard = "rgba(255,255,255,0.07)";
 const S = {
-  shell: { maxWidth: 520, margin: "0 auto", minHeight: "100vh", background: "linear-gradient(180deg,#F6FBF2 0%,#F3EFE6 55%,#FBF4EA 100%)", fontFamily: "'Inter', system-ui, sans-serif", color: ink, paddingBottom: 60, position: "relative" },
-  loadDot: { width: 22, height: 22, borderRadius: "50%", border: `3px solid ${line}`, borderTopColor: accent, animation: "spin 0.8s linear infinite", margin: "0 auto" },
-
-  loginCard: { padding: "48px 28px", maxWidth: 380, margin: "0 auto", textAlign: "center", animation: "popIn 0.5s ease" },
-  watermark: { position: "absolute", top: 80, left: "50%", transform: "translateX(-50%)", width: 460, maxWidth: "120%", opacity: 0.06, pointerEvents: "none", zIndex: 0 },
-  logoMark: { width: 64, height: 64, borderRadius: 20, background: `linear-gradient(135deg,${lime},${accent})`, color: "#fff", display: "grid", placeItems: "center", margin: "0 auto 18px", boxShadow: "0 10px 30px rgba(31,157,85,0.35)", animation: "bob 3s ease-in-out infinite" },
-  loginTitle: { fontSize: 38, fontWeight: 800, letterSpacing: "-0.03em", margin: "0 0 6px", background: `linear-gradient(135deg,${accent},${lime})`, WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent", backgroundClip: "text" },
-  loginSub: { fontSize: 14, color: "#6B6B5E", margin: "0 0 28px", lineHeight: 1.5 },
-  errTxt: { color: "#C0392B", fontSize: 13.5, marginTop: 12 },
-
-  pinDot: { width: 14, height: 14, borderRadius: "50%", border: `2px solid ${line}`, background: "#fff", transition: "all 0.2s ease" },
-  pinDotFull: { background: accent, borderColor: accent, transform: "scale(1.2)" },
-  keypad: { display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 10, marginTop: 6 },
-  key: { padding: "16px 0", fontSize: 20, fontWeight: 700, background: "#fff", border: `1px solid ${line}`, borderRadius: 14, cursor: "pointer", color: ink, display: "grid", placeItems: "center", boxShadow: "0 2px 6px rgba(0,0,0,0.04)" },
-
-  header: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "22px 20px 14px" },
-  headTitle: { fontSize: 26, fontWeight: 800, letterSpacing: "-0.02em", background: `linear-gradient(135deg,${accent},${lime})`, WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent", backgroundClip: "text" },
-  headSub: { fontSize: 12, color: "#8A8475", textTransform: "uppercase", letterSpacing: "0.06em" },
-  exitBtn: { display: "flex", alignItems: "center", gap: 6, background: "#fff", border: `1px solid ${line}`, padding: "7px 12px", borderRadius: 10, fontSize: 13, color: ink, cursor: "pointer" },
-
-  alert: { display: "flex", alignItems: "center", gap: 8, margin: "0 20px 8px", padding: "11px 14px", background: "#FFF1DA", color: "#B26A00", borderRadius: 12, fontSize: 13, animation: "popIn 0.3s ease" },
-
-  tabs: { display: "flex", gap: 4, padding: "6px 16px 0", overflowX: "auto" },
-  tab: { padding: "9px 14px", border: "none", background: "transparent", fontSize: 13.5, fontWeight: 600, color: "#8A8475", cursor: "pointer", borderRadius: 10, whiteSpace: "nowrap" },
-  tabActive: { background: `linear-gradient(135deg,${accent},${lime})`, color: "#fff", boxShadow: "0 4px 12px rgba(31,157,85,0.3)" },
-
-  body: { padding: "16px 20px 0" },
-  statGrid: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 8 },
-  stat: { background: "#fff", border: `1px solid ${line}`, borderRadius: 16, padding: "14px 15px", animation: "rise 0.4s ease both", boxShadow: "0 4px 14px rgba(0,0,0,0.04)" },
-  statAccent: { background: `linear-gradient(135deg,${accent},${lime})`, border: "none", boxShadow: "0 8px 22px rgba(31,157,85,0.32)" },
-  statIcon: { width: 32, height: 32, borderRadius: 10, background: "#EAF7EE", color: accent, display: "grid", placeItems: "center", marginBottom: 9 },
-  statLabel: { fontSize: 11.5, color: "#8A8475", marginBottom: 3 },
-  statValue: { fontSize: 22, fontWeight: 800, letterSpacing: "-0.02em" },
-
-  sectionTitle: { fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", color: "#8A8475", margin: "22px 0 10px" },
-  hint: { fontSize: 13, color: "#8A8475", margin: "-4px 0 12px", lineHeight: 1.5 },
-  empty: { fontSize: 13.5, color: "#9A9384", textAlign: "center", padding: "20px 0" },
-
-  card: { display: "flex", alignItems: "center", gap: 12, background: "#fff", border: `1px solid ${line}`, borderRadius: 16, padding: "13px 15px", boxShadow: "0 3px 10px rgba(0,0,0,0.04)" },
-  cardName: { fontSize: 15, fontWeight: 700, letterSpacing: "-0.01em" },
-  cardMeta: { fontSize: 12.5, color: "#8A8475", marginTop: 2 },
-  lowTag: { fontSize: 10, background: "#FFE2E2", color: "#C0392B", padding: "2px 7px", borderRadius: 20, fontWeight: 700, marginLeft: 6, verticalAlign: "middle" },
-  outTag: { fontSize: 10, background: "#C0392B", color: "#fff", padding: "2px 8px", borderRadius: 20, fontWeight: 700, marginLeft: 6, verticalAlign: "middle" },
-  invTag: { fontSize: 10, background: "#EAF7EE", color: accent, padding: "2px 8px", borderRadius: 20, fontWeight: 700, marginLeft: 6, verticalAlign: "middle", fontFamily: "monospace" },
-  sugBox: { position: "absolute", top: "100%", left: 0, right: 0, background: "#
+  shell: { maxWidth: 520, margin: "0 auto", minHeight: "100vh", background: "radial-gradient(120% 60% at 50% 0%, #FFFDF6 0%, #F6FBF2 35%, #F1EDE2 100%)", fontFamily: "'Inter', system-ui, sans-serif", color: ink, paddin
