@@ -353,7 +353,7 @@ function useData(businessId) {
       const bizFilter = `business_id=eq.${businessId}&`;
       const [p, s] = await Promise.all([
         sb.select("products", `${bizFilter}order=created_at.asc`),
-        sb.select("sales", `${bizFilter}order=sold_at.desc&limit=200`),
+        sb.select("sales", `${bizFilter}order=sold_at.desc&limit=5000`),
       ]);
       setProducts(p); setSales(s);
       store.set(cacheKey(businessId, "products"), p);
