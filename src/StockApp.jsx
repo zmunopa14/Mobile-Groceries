@@ -86,19 +86,34 @@ const priceFmt = (n) => {
   return "$" + s;
 };
 
-// Show stock as "100 left (5 packs + 0)" when pack size > 1
+// Stock is counted in packs; pack_size is shown as a label only
 function stockLabel(p) {
+  const n = p.qty;
+  return `${n} pack${n === 1 ? "" : "s"}`;
+}
+function packNote(p) {
   const ps = p.pack_size || 1;
-  if (ps <= 1) return `${p.qty} left`;
-  const packs = Math.floor(p.qty / ps);
-  const rem = p.qty % ps;
-  return `${p.qty} left (${packs} pack${packs === 1 ? "" : "s"}${rem ? ` + ${rem}` : ""})`;
+  return ps > 1 ? `pack of ${ps}` : "";
 }
 
 function filterProducts(products, search) {
   const q = search.trim().toLowerCase();
   if (!q) return products;
   return products.filter((p) => p.name.toLowerCase().includes(q));
+}
+
+// Build a list of past customers (most recent phone per name) from sales
+function customerHistory(sales) {
+  const map = {};
+  sales.forEach((s) => {
+    const name = (s.customer_name || "").trim();
+    if (!name) return;
+    if (!map[name]) map[name] = { name, phone: s.customer_phone || "", at: s.sold_at };
+    else if (new Date(s.sold_at) > new Date(map[name].at)) {
+      map[name] = { name, phone: s.customer_phone || map[name].phone, at: s.sold_at };
+    }
+  });
+  return Object.values(map);
 }
 
 // Pick a fun grocery emoji based on the product name
@@ -287,7 +302,7 @@ function Admin({ user, onExit, businessName }) {
         </div>
       )}
       <Tabs tab={tab} setTab={setTab} items={[
-        ["overview","Overview"],["stock","Stock"],["report","Tuesday report"],["team","Team"],
+        ["overview","Overview"],["stock","Stock"],["transactions","Invoices"],["cashups","Cash-ups"],["report","Tuesday report"],["team","Team"],
       ]} />
       <div style={S.body}>
         {loading ? <Loading /> : <>
@@ -303,6 +318,8 @@ function Admin({ user, onExit, businessName }) {
             <SalesList sales={sales.slice(0,20)} showSeller onDelete={deleteSale} showTithe />
           </>}
           {tab === "stock" && <StockManager products={products} onChange={refresh} businessId={user.business_id} />}
+          {tab === "transactions" && <Transactions sales={sales} products={products} businessId={user.business_id} onChange={refresh} onDeleteSale={deleteSale} />}
+          {tab === "cashups" && <CashUps businessId={user.business_id} />}
           {tab === "report" && <Report sales={sales} totalSales={totalSales} totalTithe={totalTithe} cash={cash} low={[...out, ...low]} />}
           {tab === "team" && <TeamManager onChange={refresh} businessId={user.business_id} />}
         </>}
@@ -321,6 +338,7 @@ function Seller({ user, onExit, businessName }) {
   const [cart, setCart] = useState([]);          // [{product, units}]
   const [showCart, setShowCart] = useState(false);
   const [receipt, setReceipt] = useState(null);  // completed invoice for sharing
+  const [closingDay, setClosingDay] = useState(false);
   const [search, setSearch] = useState("");
   const mine = sales.filter((s) => s.seller_name === user.name);
   const myTotal = mine.reduce((a, x) => a + Number(x.total), 0);
@@ -380,6 +398,9 @@ function Seller({ user, onExit, businessName }) {
             <Stat icon={<TrendingUp size={16} />} label="My sales total" value={money(myTotal)} accent />
             <Stat icon={<FileText size={16} />} label="My transactions" value={mine.length} />
           </div>
+          <button style={{ ...S.btn, ...S.btnGhost, width: "100%", marginBottom: 4 }} onClick={() => setClosingDay(true)}>
+            <FileText size={17} /> Close day &amp; submit cash-up
+          </button>
           <SectionTitle>New sale</SectionTitle>
           <p style={S.hint}>Tap items to add to the basket, then check out as one receipt.</p>
           <SearchBar value={search} onChange={setSearch} />
@@ -395,7 +416,7 @@ function Seller({ user, onExit, businessName }) {
                   <div style={{ flex: 1 }}>
                     <div style={S.cardName}>{p.name}{inCart && <span style={S.cartBadge}>{inCart.units} in basket</span>}</div>
                     <div style={S.cardMeta}>
-                      {priceFmt(p.price)}/unit · {low ? <span style={{ color: "#C0392B", fontWeight: 600 }}>out of stock</span> : stockLabel(p)}
+                      {priceFmt(p.price)}/pack · {low ? <span style={{ color: "#C0392B", fontWeight: 600 }}>out of stock</span> : stockLabel(p)}
                     </div>
                   </div>
                   <button style={S.sellBtn} onClick={() => setAdding(p)}>+ Add</button>
@@ -403,8 +424,9 @@ function Seller({ user, onExit, businessName }) {
               );
             })}
           </div>
-          <SectionTitle>My recent sales</SectionTitle>
-          <SalesList sales={mine.slice(0, 15)} />
+          <SectionTitle>My recent invoices</SectionTitle>
+          <p style={S.hint}>Tap an invoice to check what you sold.</p>
+          <SellerInvoices sales={mine} businessName={businessName} sellerName={user.name} />
         </>}
       </div>
 
@@ -419,42 +441,41 @@ function Seller({ user, onExit, businessName }) {
 
       {adding && <AddToCartModal product={adding} onClose={() => setAdding(null)} onAdd={addToCart} />}
       {showCart && (
-        <CartModal cart={cart} total={cartTotal} onClose={() => setShowCart(false)}
+        <CartModal cart={cart} total={cartTotal} customers={customerHistory(sales)} onClose={() => setShowCart(false)}
           onRemove={removeFromCart} onCheckout={checkout} />
       )}
       {receipt && <ReceiptModal receipt={receipt} onClose={() => setReceipt(null)} />}
+      {closingDay && (
+        <CloseDayModal sales={mine} user={user} onClose={() => setClosingDay(false)}
+          onSubmitted={() => { setClosingDay(false); setToast("Day report sent to admin"); setTimeout(() => setToast(""), 2200); }} />
+      )}
       {toast && <div style={S.toast}>{toast}</div>}
     </div>
   );
 }
 
-// Add-to-cart modal: packs + units
+// Add-to-cart modal: packs only
 function AddToCartModal({ product, onClose, onAdd }) {
   const [packs, setPacks] = useState("");
-  const [units, setUnits] = useState("");
   const [warned, setWarned] = useState(false);
-  const ps = product.pack_size || 1;
-  const totalUnits = (parseInt(packs) || 0) * ps + (parseInt(units) || 0);
-  const totalPrice = totalUnits * Number(product.price);
-  const oversell = totalUnits > product.qty; // selling more than recorded stock
+  const totalPacks = parseInt(packs) || 0;
+  const totalPrice = totalPacks * Number(product.price);
+  const oversell = totalPacks > product.qty;
 
   const handleAdd = () => {
-    if (totalUnits <= 0) return;
-    if (oversell && !warned) { setWarned(true); return; } // warn once, then allow
-    onAdd(product, totalUnits);
+    if (totalPacks <= 0) return;
+    if (oversell && !warned) { setWarned(true); return; }
+    onAdd(product, totalPacks);
   };
 
   return (
     <Modal onClose={onClose} title={`${emojiFor(product.name)} ${product.name}`}>
       <p style={{ ...S.hint, marginTop: 0 }}>
-        Pack size: {ps} unit{ps > 1 ? "s" : ""} · {stockLabel(product)} available
+        {priceFmt(product.price)} per pack{packNote(product) ? ` · ${packNote(product)}` : ""} · {stockLabel(product)} available
       </p>
-      <div style={{ display: "flex", gap: 10 }}>
-        <Field label="Packs" value={packs} onChange={setPacks} type="number" placeholder="0" />
-        <Field label="Units" value={units} onChange={setUnits} type="number" placeholder="0" />
-      </div>
+      <Field label="Number of packs" value={packs} onChange={setPacks} type="number" placeholder="0" />
       <div style={S.sellSummary}>
-        <span>{totalUnits} unit{totalUnits === 1 ? "" : "s"}</span>
+        <span>{totalPacks} pack{totalPacks === 1 ? "" : "s"}</span>
         <span style={{ fontWeight: 800 }}>{money(totalPrice)}</span>
       </div>
       {oversell && warned && (
@@ -463,7 +484,7 @@ function AddToCartModal({ product, onClose, onAdd }) {
         </p>
       )}
       <button style={{ ...S.btn, ...(oversell && warned ? S.btnWarn : S.btnDark), width: "100%", marginTop: 8 }}
-        disabled={totalUnits <= 0} onClick={handleAdd}>
+        disabled={totalPacks <= 0} onClick={handleAdd}>
         <Plus size={18} /> {oversell && warned ? "Confirm & add anyway" : "Add to basket"}
       </button>
     </Modal>
@@ -471,17 +492,24 @@ function AddToCartModal({ product, onClose, onAdd }) {
 }
 
 // Cart review + checkout
-function CartModal({ cart, total, onClose, onRemove, onCheckout }) {
+function CartModal({ cart, total, customers = [], onClose, onRemove, onCheckout }) {
   const [busy, setBusy] = useState(false);
   const [received, setReceived] = useState("");
   const [customer, setCustomer] = useState("");
   const [phone, setPhone] = useState("");
+  const [showSug, setShowSug] = useState(false);
   const go = async () => { setBusy(true); await onCheckout({ customer: customer.trim(), phone: phone.trim() }); setBusy(false); };
 
   const recNum = parseFloat(received);
   const hasReceived = received !== "" && !isNaN(recNum);
   const change = hasReceived ? recNum - total : 0;
   const shortfall = hasReceived && change < 0;
+
+  const q = customer.trim().toLowerCase();
+  const suggestions = q
+    ? customers.filter((c) => c.name.toLowerCase().includes(q) && c.name.toLowerCase() !== q).slice(0, 5)
+    : [];
+  const pick = (c) => { setCustomer(c.name); if (c.phone) setPhone(c.phone); setShowSug(false); };
 
   return (
     <Modal onClose={onClose} title="🧺 Basket">
@@ -505,7 +533,24 @@ function CartModal({ cart, total, onClose, onRemove, onCheckout }) {
       </div>
 
       <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
-        <Field label="Customer name" value={customer} onChange={setCustomer} placeholder="e.g. Mrs Moyo" />
+        <div style={{ flex: 1, position: "relative" }}>
+          <label style={S.fieldWrap}>
+            <span style={S.fieldLabel}>Customer name</span>
+            <input style={S.input} value={customer} placeholder="e.g. Mai Moyo"
+              onChange={(e) => { setCustomer(e.target.value); setShowSug(true); }}
+              onFocus={() => setShowSug(true)} />
+          </label>
+          {showSug && suggestions.length > 0 && (
+            <div style={S.sugBox}>
+              {suggestions.map((c) => (
+                <button key={c.name} style={S.sugItem} onClick={() => pick(c)}>
+                  <span style={{ fontWeight: 600 }}>{c.name}</span>
+                  {c.phone && <span style={{ color: "#8A8475", fontSize: 12 }}>{c.phone}</span>}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
         <Field label="Phone" value={phone} onChange={setPhone} type="tel" placeholder="077…" />
       </div>
       <Field label="Amount received from customer ($)" value={received} onChange={setReceived} type="number" placeholder="0.00" />
@@ -527,6 +572,12 @@ function CartModal({ cart, total, onClose, onRemove, onCheckout }) {
 // Receipt with share button
 function ReceiptModal({ receipt, onClose }) {
   const text = receiptText(receipt);
+  const cleanPhone = (receipt.phone || "").replace(/[^\d+]/g, "");
+  const smsToCustomer = () => {
+    // Open the phone's default SMS app, addressed to the customer, with the receipt prefilled
+    const body = encodeURIComponent(text);
+    window.location.href = `sms:${cleanPhone}?body=${body}`;
+  };
   const share = async () => {
     try {
       if (navigator.share) await navigator.share({ title: `Receipt ${receipt.no}`, text });
@@ -560,8 +611,13 @@ function ReceiptModal({ receipt, onClose }) {
         </div>
         <div style={{ ...S.cardMeta, textAlign: "center", marginTop: 8 }}>Served by {receipt.seller}</div>
       </div>
-      <button style={{ ...S.btn, ...S.btnDark, width: "100%", marginTop: 12 }} onClick={share}>
-        <Send size={17} /> Share receipt with customer
+      {cleanPhone && (
+        <button style={{ ...S.btn, ...S.btnDark, width: "100%", marginTop: 12 }} onClick={smsToCustomer}>
+          <Send size={17} /> Text receipt to {receipt.customer || "customer"}
+        </button>
+      )}
+      <button style={{ ...S.btn, ...(cleanPhone ? S.btnGhost : S.btnDark), width: "100%", marginTop: 8 }} onClick={share}>
+        <Send size={17} /> Share receipt another way
       </button>
       <button style={{ ...S.btn, ...S.btnGhost, width: "100%", marginTop: 8 }} onClick={onClose}>Done</button>
     </Modal>
@@ -572,6 +628,120 @@ function receiptText(r) {
   const lines = r.lines.map((l) => `${l.name} x${l.units}  ${money(l.total)}`).join("\n");
   const cust = r.customer ? `\nCustomer: ${r.customer}${r.phone ? ` (${r.phone})` : ""}` : "";
   return `${r.business}\nReceipt ${r.no}\n${r.when.toLocaleString()}${cust}\n\n${lines}\n\nTOTAL: ${money(r.total)}\nServed by ${r.seller}\nThank you!`;
+}
+
+// Seller's own invoices — tappable, opens the receipt to review
+function SellerInvoices({ sales, businessName, sellerName }) {
+  const [view, setView] = useState(null);
+  const invoices = groupByInvoice(sales).slice(0, 20);
+  if (invoices.length === 0) return <p style={S.empty}>No sales yet.</p>;
+
+  const openReceipt = (inv) => setView({
+    no: inv.invoice_no || "—",
+    when: new Date(inv.when),
+    seller: sellerName,
+    business: businessName,
+    customer: inv.customer, phone: inv.phone,
+    lines: inv.lines.map((l) => ({ name: l.product_name, units: l.qty, total: Number(l.total) })),
+    total: inv.total,
+  });
+
+  return (
+    <>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {invoices.map((inv) => (
+          <button key={inv.key} style={{ ...S.card, width: "100%", textAlign: "left", cursor: "pointer" }} onClick={() => openReceipt(inv)}>
+            <div style={{ flex: 1 }}>
+              <div style={S.cardName}>{inv.customer || "No name"} {inv.invoice_no && <span style={S.invTag}>{inv.invoice_no}</span>}</div>
+              <div style={S.cardMeta}>
+                {new Date(inv.when).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+                {" · "}{inv.lines.length} item{inv.lines.length > 1 ? "s" : ""}
+              </div>
+            </div>
+            <div style={S.saleName}>{money(inv.total)}</div>
+          </button>
+        ))}
+      </div>
+      {view && <ReceiptModal receipt={view} onClose={() => setView(null)} />}
+    </>
+  );
+}
+
+// Day-end cash-up: seller reviews today's sales, enters cash, submits to admin
+function CloseDayModal({ sales, user, onClose, onSubmitted }) {
+  const todayStr = localDateStr(new Date());
+  const [day, setDay] = useState(todayStr);
+  const [cash, setCash] = useState("");
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const dayInvoices = groupByInvoice(sales.filter((s) => localDateStr(new Date(s.sold_at)) === day));
+  const salesTotal = dayInvoices.reduce((a, inv) => a + inv.total, 0);
+  const cashNum = parseFloat(cash);
+  const hasCash = cash !== "" && !isNaN(cashNum);
+  const diff = hasCash ? cashNum - salesTotal : 0;
+
+  const submit = async () => {
+    setBusy(true);
+    try {
+      await sb.insert("day_reports", {
+        business_id: user.business_id,
+        seller_name: user.name,
+        report_date: day,
+        sales_total: salesTotal,
+        cash_in_hand: hasCash ? cashNum : 0,
+        tx_count: dayInvoices.length,
+        note: note.trim() || null,
+        confirmed: false,
+      });
+      onSubmitted();
+    } catch (e) { alert(e.message); }
+    setBusy(false);
+  };
+
+  return (
+    <Modal onClose={onClose} title="📋 Close day">
+      <div style={{ ...S.fieldWrap }}>
+        <span style={S.fieldLabel}>Day</span>
+        <input style={S.input} type="date" value={day} max={todayStr} onChange={(e) => setDay(e.target.value)} />
+      </div>
+      <div style={S.cartTotalRow}>
+        <span>Sales total ({dayInvoices.length} sale{dayInvoices.length === 1 ? "" : "s"})</span>
+        <span>{money(salesTotal)}</span>
+      </div>
+
+      <Field label="Actual cash in hand ($)" value={cash} onChange={setCash} type="number" placeholder="0.00" />
+      {hasCash && (
+        <div style={{ ...S.cartTotalRow, background: diff === 0 ? "#EAF7EE" : Math.abs(diff) < 0.005 ? "#EAF7EE" : "#FFF1DA", color: diff < -0.005 ? "#C0392B" : accent }}>
+          <span>{diff < -0.005 ? "Short by" : diff > 0.005 ? "Over by" : "Matches exactly"}</span>
+          <span>{diff === 0 ? "✓" : money(Math.abs(diff))}</span>
+        </div>
+      )}
+      <Field label="Note for admin (optional)" value={note} onChange={setNote} placeholder="e.g. gave 2 on credit" />
+
+      <SectionTitle>Today's transactions</SectionTitle>
+      {dayInvoices.length === 0 && <p style={S.empty}>No sales recorded for this day.</p>}
+      <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 8 }}>
+        {dayInvoices.map((inv) => (
+          <div key={inv.key} style={S.saleRow}>
+            <div style={{ flex: 1 }}>
+              <div style={S.saleName}>{inv.customer || "No name"}</div>
+              <div style={S.cardMeta}>{inv.lines.length} item{inv.lines.length > 1 ? "s" : ""} · {new Date(inv.when).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</div>
+            </div>
+            <div style={S.saleName}>{money(inv.total)}</div>
+          </div>
+        ))}
+      </div>
+
+      <button style={{ ...S.btn, ...S.btnDark, width: "100%" }} disabled={busy || dayInvoices.length === 0} onClick={submit}>
+        <Check size={18} /> {busy ? "Submitting…" : "Submit to admin"}
+      </button>
+    </Modal>
+  );
+}
+
+function localDateStr(d) {
+  return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
 }
 
 // ============================================================
@@ -591,12 +761,10 @@ function StockManager({ products, onChange, businessId }) {
     if (!f.name.trim() || f.price === "") return;
     setBusy(true);
     try {
-      const ps = parseInt(f.pack_size) || 1;
-      const opening = (parseInt(f.packs) || 0) * ps + (parseInt(f.units) || 0);
       await sb.insert("products", {
         name: f.name.trim(), price: parseFloat(f.price) || 0,
-        tithe_pct: parseFloat(f.pct) || 0, qty: opening,
-        pack_size: ps, low_at: parseInt(f.low) || 5, business_id: businessId,
+        tithe_pct: parseFloat(f.pct) || 0, qty: parseInt(f.packs) || 0,
+        pack_size: parseInt(f.pack_size) || 1, low_at: parseInt(f.low) || 5, business_id: businessId,
       });
       setF({ name: "", price: "", pct: "", packs: "", units: "", pack_size: "1", low: "5" });
       setOpen(false); await onChange();
@@ -655,22 +823,13 @@ function StockManager({ products, onChange, businessId }) {
             <div key={p.id} style={S.card}>
               <div style={{ flex: 1 }}>
                 <div style={S.cardName}>{p.name} {p.qty <= 0 ? <span style={S.outTag}>out — restock</span> : p.qty <= p.low_at ? <span style={S.lowTag}>low</span> : null}</div>
-                <div style={S.cardMeta}>{priceFmt(p.price)}/unit · {p.tithe_pct}% to God · pack of {ps}</div>
-                <div style={{ ...S.cardMeta, color: p.qty <= 0 ? "#C0392B" : "#1F9D55", fontWeight: 600 }}>{p.qty <= 0 ? `${p.qty} — out of stock` : stockLabel(p)}</div>
+                <div style={S.cardMeta}>{priceFmt(p.price)}/pack · {p.tithe_pct}% to God{ps > 1 ? ` · pack of ${ps}` : ""}</div>
+                <div style={{ ...S.cardMeta, color: p.qty <= 0 ? "#C0392B" : "#1F9D55", fontWeight: 600 }}>{p.qty <= 0 ? `${p.qty} packs — out of stock` : stockLabel(p)}</div>
               </div>
-              <div style={S.qtyCol}>
-                {ps > 1 && (
-                  <div style={S.qtyCtrl}>
-                    <button style={S.qtyBtn} onClick={() => restock(p, -ps)}><Minus size={13} /></button>
-                    <span style={S.qtyTiny}>pack</span>
-                    <button style={S.qtyBtn} onClick={() => restock(p, ps)}><Plus size={13} /></button>
-                  </div>
-                )}
-                <div style={S.qtyCtrl}>
-                  <button style={S.qtyBtn} onClick={() => restock(p, -1)}><Minus size={13} /></button>
-                  <span style={S.qtyTiny}>unit</span>
-                  <button style={S.qtyBtn} onClick={() => restock(p, 1)}><Plus size={13} /></button>
-                </div>
+              <div style={S.qtyCtrl}>
+                <button style={S.qtyBtn} onClick={() => restock(p, -1)}><Minus size={14} /></button>
+                <span style={S.qtyNum}>{p.qty}</span>
+                <button style={S.qtyBtn} onClick={() => restock(p, 1)}><Plus size={14} /></button>
               </div>
               <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
                 <button style={S.editBtn} onClick={() => setEditing(p)}><Pencil size={15} /></button>
@@ -683,14 +842,11 @@ function StockManager({ products, onChange, businessId }) {
       {open && (
         <Modal onClose={() => setOpen(false)} title="New product">
           <Field label="Product name" value={f.name} onChange={(v)=>setF({...f,name:v})} placeholder="e.g. Maputi snack" />
-          <Field label="Selling price per unit ($)" value={f.price} onChange={(v)=>setF({...f,price:v})} type="number" placeholder="1.50" />
-          <Field label="Units per pack / carton" value={f.pack_size} onChange={(v)=>setF({...f,pack_size:v})} type="number" placeholder="20" />
+          <Field label="Selling price per pack ($)" value={f.price} onChange={(v)=>setF({...f,price:v})} type="number" placeholder="9.50" />
+          <Field label="Items in a pack (label only, e.g. 20)" value={f.pack_size} onChange={(v)=>setF({...f,pack_size:v})} type="number" placeholder="20" />
           <Field label="Percentage to God (%)" value={f.pct} onChange={(v)=>setF({...f,pct:v})} type="number" placeholder="10" />
-          <div style={{ display: "flex", gap: 10 }}>
-            <Field label="Opening packs" value={f.packs} onChange={(v)=>setF({...f,packs:v})} type="number" placeholder="0" />
-            <Field label="Opening units" value={f.units} onChange={(v)=>setF({...f,units:v})} type="number" placeholder="0" />
-          </div>
-          <Field label="Warn me when units drop to" value={f.low} onChange={(v)=>setF({...f,low:v})} type="number" placeholder="5" />
+          <Field label="Opening stock (packs)" value={f.packs} onChange={(v)=>setF({...f,packs:v})} type="number" placeholder="0" />
+          <Field label="Warn me when packs drop to" value={f.low} onChange={(v)=>setF({...f,low:v})} type="number" placeholder="5" />
           <button style={{ ...S.btn, ...S.btnDark, width: "100%", marginTop: 8 }} disabled={busy} onClick={add}>
             <Check size={18} /> {busy ? "Saving…" : "Save product"}
           </button>
@@ -726,9 +882,9 @@ function EditProductModal({ product, onClose, onSave }) {
   return (
     <Modal onClose={onClose} title="Edit product">
       <Field label="Product name" value={name} onChange={setName} />
-      <Field label="Selling price per unit ($)" value={price} onChange={setPrice} type="number" />
+      <Field label="Selling price per pack ($)" value={price} onChange={setPrice} type="number" />
       <Field label="Percentage to God (%)" value={pct} onChange={setPct} type="number" />
-      <Field label="Units per pack / carton" value={packSize} onChange={setPackSize} type="number" />
+      <Field label="Items in a pack (label only)" value={packSize} onChange={setPackSize} type="number" />
       <Field label="Warn me when units drop to" value={low} onChange={setLow} type="number" />
       <p style={{ ...S.hint, marginBottom: 4 }}>To change quantity, use the + / − buttons on the stock list.</p>
       <button style={{ ...S.btn, ...S.btnDark, width: "100%", marginTop: 4 }} disabled={busy} onClick={save}>
@@ -738,6 +894,233 @@ function EditProductModal({ product, onClose, onSave }) {
   );
 }
 // ============================================================
+// Group flat sales rows into invoices
+function groupByInvoice(sales) {
+  const map = {};
+  sales.forEach((s) => {
+    const key = s.invoice_no || `single-${s.id}`;
+    if (!map[key]) {
+      map[key] = {
+        invoice_no: s.invoice_no, key,
+        when: s.sold_at, seller: s.seller_name,
+        customer: s.customer_name || "", phone: s.customer_phone || "",
+        lines: [], total: 0,
+        single_id: s.invoice_no ? null : s.id,
+      };
+    }
+    map[key].lines.push(s);
+    map[key].total += Number(s.total);
+  });
+  return Object.values(map).sort((a, b) => new Date(b.when) - new Date(a.when));
+}
+
+function Transactions({ sales, products, businessId, onChange, onDeleteSale }) {
+  const [nameQ, setNameQ] = useState("");
+  const [dateQ, setDateQ] = useState("");
+  const [editing, setEditing] = useState(null);
+
+  let invoices = groupByInvoice(sales);
+  if (nameQ.trim()) {
+    const q = nameQ.trim().toLowerCase();
+    invoices = invoices.filter((inv) => (inv.customer || "").toLowerCase().includes(q));
+  }
+  if (dateQ) {
+    invoices = invoices.filter((inv) => {
+      const d = new Date(inv.when);
+      const local = new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+      return local === dateQ;
+    });
+  }
+
+  return (
+    <>
+      <SectionTitle>Find an invoice</SectionTitle>
+      <div style={S.searchWrap}>
+        <Search size={16} style={{ color: "#8A8475", flexShrink: 0 }} />
+        <input style={S.searchInput} value={nameQ} placeholder="Search customer name…" onChange={(e) => setNameQ(e.target.value)} />
+        {nameQ && <button style={S.searchClear} onClick={() => setNameQ("")}><X size={15} /></button>}
+      </div>
+      <div style={{ ...S.fieldWrap, marginBottom: 14 }}>
+        <span style={S.fieldLabel}>Filter by date</span>
+        <input style={S.input} type="date" value={dateQ} onChange={(e) => setDateQ(e.target.value)} />
+        {dateQ && <button style={{ ...S.btn, ...S.btnGhost, marginTop: 8, padding: "8px 12px" }} onClick={() => setDateQ("")}>Clear date</button>}
+      </div>
+
+      {invoices.length === 0 && <p style={S.empty}>No invoices match your search.</p>}
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {invoices.map((inv) => (
+          <div key={inv.key} style={S.card}>
+            <div style={{ flex: 1 }}>
+              <div style={S.cardName}>{inv.customer || "No name"} {inv.invoice_no && <span style={S.invTag}>{inv.invoice_no}</span>}</div>
+              <div style={S.cardMeta}>
+                {new Date(inv.when).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+                {" · "}{inv.lines.length} item{inv.lines.length > 1 ? "s" : ""} · {inv.seller}
+              </div>
+              {inv.phone && <div style={S.cardMeta}>{inv.phone}</div>}
+            </div>
+            <div style={{ textAlign: "right" }}>
+              <div style={S.saleName}>{money(inv.total)}</div>
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              {inv.invoice_no
+                ? <button style={S.editBtn} onClick={() => setEditing(inv)}><Pencil size={15} /></button>
+                : null}
+              <button style={S.delBtn} onClick={() => onDeleteSale(inv.lines[0])}><X size={16} /></button>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {editing && (
+        <EditInvoiceModal invoice={editing} products={products}
+          onClose={() => setEditing(null)} onChange={onChange} />
+      )}
+    </>
+  );
+}
+
+// Edit an invoice's items, customer details
+function EditInvoiceModal({ invoice, products, onClose, onChange }) {
+  const [customer, setCustomer] = useState(invoice.customer);
+  const [phone, setPhone] = useState(invoice.phone);
+  const [lines, setLines] = useState(
+    invoice.lines.map((l) => ({ product_id: l.product_id, name: l.product_name, packs: l.qty, price: Number(l.unit_price) }))
+  );
+  const [addId, setAddId] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const setPacks = (i, v) => setLines((prev) => prev.map((l, j) => j === i ? { ...l, packs: parseInt(v) || 0 } : l));
+  const removeLine = (i) => setLines((prev) => prev.filter((_, j) => j !== i));
+  const addLine = () => {
+    const p = products.find((x) => x.id === addId);
+    if (!p) return;
+    if (lines.some((l) => l.product_id === p.id)) { setAddId(""); return; }
+    setLines((prev) => [...prev, { product_id: p.id, name: p.name, packs: 1, price: Number(p.price) }]);
+    setAddId("");
+  };
+  const total = lines.reduce((a, l) => a + l.packs * l.price, 0);
+
+  const save = async () => {
+    setBusy(true);
+    try {
+      const items = lines.filter((l) => l.packs > 0).map((l) => ({ product_id: l.product_id, packs: l.packs }));
+      await sb.rpc("edit_invoice", {
+        p_invoice_no: invoice.invoice_no, p_items: items,
+        p_customer: customer.trim() || null, p_phone: phone.trim() || null,
+      });
+      onClose(); await onChange();
+    } catch (e) { alert(e.message); }
+    setBusy(false);
+  };
+
+  return (
+    <Modal onClose={onClose} title={`Edit ${invoice.invoice_no}`}>
+      <div style={{ display: "flex", gap: 10 }}>
+        <Field label="Customer name" value={customer} onChange={setCustomer} />
+        <Field label="Phone" value={phone} onChange={setPhone} type="tel" />
+      </div>
+      <SectionTitle>Items</SectionTitle>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {lines.map((l, i) => (
+          <div key={l.product_id} style={S.cartLine}>
+            <div style={{ fontSize: 20 }}>{emojiFor(l.name)}</div>
+            <div style={{ flex: 1 }}>
+              <div style={S.cardName}>{l.name}</div>
+              <div style={S.cardMeta}>{priceFmt(l.price)}/pack</div>
+            </div>
+            <input style={{ ...S.input, width: 64, textAlign: "center" }} type="number" value={l.packs}
+              onChange={(e) => setPacks(i, e.target.value)} />
+            <button style={S.delBtn} onClick={() => removeLine(i)}><X size={16} /></button>
+          </div>
+        ))}
+      </div>
+      <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+        <select style={{ ...S.input, flex: 1 }} value={addId} onChange={(e) => setAddId(e.target.value)}>
+          <option value="">Add a product…</option>
+          {products.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+        </select>
+        <button style={{ ...S.btn, ...S.btnGhost }} onClick={addLine}><Plus size={16} /></button>
+      </div>
+      <div style={{ ...S.cartTotalRow, marginTop: 12 }}>
+        <span>New total</span><span>{money(total)}</span>
+      </div>
+      <p style={{ ...S.hint, marginBottom: 4 }}>Saving adjusts stock to match these changes.</p>
+      <button style={{ ...S.btn, ...S.btnDark, width: "100%" }} disabled={busy} onClick={save}>
+        <Check size={18} /> {busy ? "Saving…" : "Save changes"}
+      </button>
+    </Modal>
+  );
+}
+
+// Admin reviews seller day-end cash-ups and confirms them
+function CashUps({ businessId }) {
+  const [reports, setReports] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  const load = useCallback(async () => {
+    try {
+      setReports(await sb.select("day_reports", `business_id=eq.${businessId}&order=report_date.desc,created_at.desc`));
+    } catch {}
+    setLoading(false);
+  }, [businessId]);
+  useEffect(() => { load(); }, [load]);
+
+  const confirm = async (id) => {
+    await sb.patch("day_reports", `id=eq.${id}`, { confirmed: true });
+    await load();
+  };
+  const remove = async (id) => {
+    if (!window.confirm("Delete this cash-up report?")) return;
+    await sb.del("day_reports", `id=eq.${id}`);
+    await load();
+  };
+
+  if (loading) return <Loading />;
+
+  return (
+    <>
+      <SectionTitle>Day-end cash-ups</SectionTitle>
+      {reports.length === 0 && <p style={S.empty}>No cash-ups submitted yet.</p>}
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {reports.map((r) => {
+          const diff = Number(r.cash_in_hand) - Number(r.sales_total);
+          const short = diff < -0.005, over = diff > 0.005;
+          return (
+            <div key={r.id} style={{ ...S.card, flexDirection: "column", alignItems: "stretch", gap: 8 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <div style={{ flex: 1 }}>
+                  <div style={S.cardName}>
+                    {r.seller_name}
+                    {r.confirmed
+                      ? <span style={{ ...S.invTag, background: "#EAF7EE", color: accent }}>confirmed</span>
+                      : <span style={{ ...S.invTag, background: "#FFF1DA", color: "#B26A00" }}>pending</span>}
+                  </div>
+                  <div style={S.cardMeta}>{new Date(r.report_date).toLocaleDateString()} · {r.tx_count} sale{r.tx_count === 1 ? "" : "s"}</div>
+                </div>
+                {!r.confirmed && <button style={S.delBtn} onClick={() => remove(r.id)}><X size={16} /></button>}
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <div style={{ ...S.miniStat }}><div style={S.miniLabel}>Sales</div><div style={S.miniVal}>{money(r.sales_total)}</div></div>
+                <div style={{ ...S.miniStat }}><div style={S.miniLabel}>Cash</div><div style={S.miniVal}>{money(r.cash_in_hand)}</div></div>
+                <div style={{ ...S.miniStat, background: short ? "#FFE2E2" : over ? "#FFF1DA" : "#EAF7EE" }}>
+                  <div style={S.miniLabel}>{short ? "Short" : over ? "Over" : "Match"}</div>
+                  <div style={{ ...S.miniVal, color: short ? "#C0392B" : accent }}>{diff === 0 ? "✓" : money(Math.abs(diff))}</div>
+                </div>
+              </div>
+              {r.note && <div style={S.cardMeta}>Note: {r.note}</div>}
+              {!r.confirmed && (
+                <button style={{ ...S.btn, ...S.btnDark, width: "100%" }} onClick={() => confirm(r.id)}>
+                  <Check size={17} /> Confirm this cash-up
+                </button>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </>
+  );
+}
+
 function Report({ sales, totalSales, totalTithe, cash, low }) {
   const byProduct = {};
   sales.forEach((s) => {
@@ -1032,6 +1415,12 @@ const S = {
   cardMeta: { fontSize: 12.5, color: "#8A8475", marginTop: 2 },
   lowTag: { fontSize: 10, background: "#FFE2E2", color: "#C0392B", padding: "2px 7px", borderRadius: 20, fontWeight: 700, marginLeft: 6, verticalAlign: "middle" },
   outTag: { fontSize: 10, background: "#C0392B", color: "#fff", padding: "2px 8px", borderRadius: 20, fontWeight: 700, marginLeft: 6, verticalAlign: "middle" },
+  invTag: { fontSize: 10, background: "#EAF7EE", color: accent, padding: "2px 8px", borderRadius: 20, fontWeight: 700, marginLeft: 6, verticalAlign: "middle", fontFamily: "monospace" },
+  sugBox: { position: "absolute", top: "100%", left: 0, right: 0, background: "#fff", border: `1px solid ${line}`, borderRadius: 10, boxShadow: "0 8px 20px rgba(0,0,0,0.12)", zIndex: 30, overflow: "hidden", marginTop: 2 },
+  sugItem: { display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%", padding: "10px 13px", border: "none", borderBottom: `1px solid ${line}`, background: "#fff", cursor: "pointer", textAlign: "left" },
+  miniStat: { flex: 1, background: "#F6FBF2", borderRadius: 10, padding: "8px 10px", textAlign: "center" },
+  miniLabel: { fontSize: 10.5, color: "#8A8475", textTransform: "uppercase", letterSpacing: "0.04em" },
+  miniVal: { fontSize: 15, fontWeight: 800, marginTop: 2 },
 
   qtyCtrl: { display: "flex", alignItems: "center", gap: 8 },
   qtyCol: { display: "flex", flexDirection: "column", gap: 6 },
