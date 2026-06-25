@@ -76,6 +76,59 @@ const sb = {
   },
 };
 
+// ============================================================
+// OFFLINE STORE
+//  - Caches products & sales so the app opens with no internet.
+//  - Queues sales made offline; flushes them when back online.
+//  Uses localStorage (works in the real app & Android; not in the
+//  artifact sandbox preview — that's expected).
+// ============================================================
+const store = {
+  get(key, fallback) {
+    try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : fallback; }
+    catch { return fallback; }
+  },
+  set(key, val) {
+    try { localStorage.setItem(key, JSON.stringify(val)); } catch {}
+  },
+};
+const cacheKey = (biz, what) => `pamusika:${biz}:${what}`;
+
+function isOnline() {
+  return typeof navigator === "undefined" ? true : navigator.onLine !== false;
+}
+
+// Pending offline sales, per business
+function getPending(biz) { return store.get(cacheKey(biz, "pending"), []); }
+function setPending(biz, list) { store.set(cacheKey(biz, "pending"), list); }
+function queueSale(biz, sale) {
+  const list = getPending(biz);
+  list.push(sale);
+  setPending(biz, list);
+}
+
+// Send all queued sales to the server. Returns how many synced.
+async function flushPending(biz) {
+  if (!isOnline()) return 0;
+  let list = getPending(biz);
+  if (list.length === 0) return 0;
+  const remaining = [];
+  let synced = 0;
+  for (const sale of list) {
+    try {
+      await sb.rpc("record_invoice", {
+        p_items: sale.items, p_seller: sale.seller,
+        p_customer: sale.customer || null, p_phone: sale.phone || null,
+      });
+      synced++;
+    } catch {
+      remaining.push(sale); // keep it to retry later
+    }
+  }
+  setPending(biz, remaining);
+  return synced;
+}
+
 const configured = !SUPABASE_URL.includes("YOUR-PROJECT");
 const money = (n) => "$" + Number(n || 0).toFixed(2);
 // Unit price shown with full precision (trims trailing zeros): 0.475 -> $0.475
@@ -266,12 +319,20 @@ function Keypad({ value, onChange }) {
 // 4. SHARED DATA HOOK
 // ============================================================
 function useData(businessId) {
-  const [products, setProducts] = useState([]);
-  const [sales, setSales] = useState([]);
+  const [products, setProducts] = useState(() => store.get(cacheKey(businessId, "products"), []));
+  const [sales, setSales] = useState(() => store.get(cacheKey(businessId, "sales"), []));
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [online, setOnline] = useState(isOnline());
+  const [pending, setPendingCount] = useState(getPending(businessId).length);
 
   const refresh = useCallback(async () => {
+    // First, try to push up anything queued while offline
+    if (isOnline()) {
+      try { await flushPending(businessId); } catch {}
+    }
+    setPendingCount(getPending(businessId).length);
+
     try {
       setError("");
       const bizFilter = `business_id=eq.${businessId}&`;
@@ -280,17 +341,32 @@ function useData(businessId) {
         sb.select("sales", `${bizFilter}order=sold_at.desc&limit=200`),
       ]);
       setProducts(p); setSales(s);
-    } catch (e) { setError(e.message); }
+      store.set(cacheKey(businessId, "products"), p);
+      store.set(cacheKey(businessId, "sales"), s);
+      setOnline(true);
+    } catch (e) {
+      // Offline or server unreachable: keep showing cached data
+      setOnline(false);
+      const cachedP = store.get(cacheKey(businessId, "products"), []);
+      const cachedS = store.get(cacheKey(businessId, "sales"), []);
+      if (cachedP.length) setProducts(cachedP);
+      if (cachedS.length) setSales(cachedS);
+      setError(""); // don't alarm; offline is handled gracefully
+    }
     setLoading(false);
   }, [businessId]);
 
   useEffect(() => {
     refresh();
-    const t = setInterval(refresh, 8000); // light polling keeps phones in sync
-    return () => clearInterval(t);
+    const t = setInterval(refresh, 8000);
+    const goOnline = () => { setOnline(true); refresh(); };
+    const goOffline = () => setOnline(false);
+    window.addEventListener("online", goOnline);
+    window.addEventListener("offline", goOffline);
+    return () => { clearInterval(t); window.removeEventListener("online", goOnline); window.removeEventListener("offline", goOffline); };
   }, [refresh]);
 
-  return { products, sales, loading, error, refresh };
+  return { products, sales, loading, error, refresh, online, pending, setPendingCount };
 }
 
 // ============================================================
@@ -364,7 +440,7 @@ function Admin({ user, onExit, businessName }) {
 // 6. SELLER
 // ============================================================
 function Seller({ user, onExit, businessName }) {
-  const { products, sales, loading, error, refresh } = useData(user.business_id);
+  const { products, sales, loading, error, refresh, online, pending, setPendingCount } = useData(user.business_id);
   const [toast, setToast] = useState("");
   const [adding, setAdding] = useState(null);   // product being added to cart
   const [cart, setCart] = useState([]);          // [{product, units}]
@@ -392,30 +468,41 @@ function Seller({ user, onExit, businessName }) {
 
   const checkout = async ({ customer, phone } = {}) => {
     if (cart.length === 0) return;
+    const items = cart.map((c) => ({ product_id: c.product.id, qty: c.units }));
+    const lines = cart.map((c) => ({
+      name: c.product.name, units: c.units,
+      price: Number(c.product.price), pack_size: c.product.pack_size || 1,
+      total: c.units * Number(c.product.price),
+    }));
+    const baseReceipt = {
+      when: new Date(), seller: user.name, business: businessName,
+      customer: customer || "", phone: phone || "", lines, total: cartTotal,
+    };
+
+    const saveOffline = () => {
+      queueSale(user.business_id, { items, seller: user.name, customer, phone });
+      if (setPendingCount) setPendingCount(getPending(user.business_id).length);
+      setReceipt({ ...baseReceipt, no: "PENDING", offline: true });
+      setCart([]); setShowCart(false);
+      setToast("Saved offline — will sync when online");
+      setTimeout(() => setToast(""), 2500);
+    };
+
+    if (!isOnline()) { saveOffline(); return; }
+
     try {
-      const items = cart.map((c) => ({ product_id: c.product.id, qty: c.units }));
       const inv = await sb.rpc("record_invoice", {
         p_items: items, p_seller: user.name,
         p_customer: customer || null, p_phone: phone || null,
       });
       const invoiceNo = typeof inv === "string" ? inv : (inv && inv[0]) || "INV";
-      setReceipt({
-        no: invoiceNo,
-        when: new Date(),
-        seller: user.name,
-        business: businessName,
-        customer: customer || "",
-        phone: phone || "",
-        lines: cart.map((c) => ({
-          name: c.product.name, units: c.units,
-          price: Number(c.product.price), pack_size: c.product.pack_size || 1,
-          total: c.units * Number(c.product.price),
-        })),
-        total: cartTotal,
-      });
+      setReceipt({ ...baseReceipt, no: invoiceNo });
       setCart([]); setShowCart(false);
       await refresh();
-    } catch (e) { setToast(e.message); setTimeout(() => setToast(""), 2500); }
+    } catch (e) {
+      // Server unreachable mid-sale → fall back to offline queue instead of losing it
+      saveOffline();
+    }
   };
 
   const shown = filterProducts(products, search);
@@ -424,6 +511,18 @@ function Seller({ user, onExit, businessName }) {
     <div style={S.shell}>
       <Header title={user.name} sub={`${businessName} · Seller`} onExit={onExit} onRefresh={refresh} />
       {error && <div style={S.alert}><AlertTriangle size={16} /> {error}</div>}
+      {!online && (
+        <div style={{ ...S.alert, background: "#FFF1DA", color: "#B26A00" }}>
+          <AlertTriangle size={16} />
+          <span>Offline — sales are saved on this phone and will sync when you’re back online.</span>
+        </div>
+      )}
+      {online && pending > 0 && (
+        <div style={{ ...S.alert, background: "#EAF7EE", color: accent }}>
+          <RefreshCw size={16} />
+          <span>Syncing {pending} offline sale{pending > 1 ? "s" : ""}…</span>
+        </div>
+      )}
       <div style={S.body}>
         {loading ? <Loading /> : <>
           <div style={S.statGrid}>
