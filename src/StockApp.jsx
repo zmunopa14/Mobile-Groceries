@@ -447,6 +447,7 @@ function Seller({ user, onExit, businessName }) {
   const [showCart, setShowCart] = useState(false);
   const [receipt, setReceipt] = useState(null);  // completed invoice for sharing
   const [closingDay, setClosingDay] = useState(false);
+  const [showTx, setShowTx] = useState(false);
   const [search, setSearch] = useState("");
   const mine = sales.filter((s) => s.seller_name === user.name);
   const myTotal = mine.reduce((a, x) => a + Number(x.total), 0);
@@ -527,7 +528,13 @@ function Seller({ user, onExit, businessName }) {
         {loading ? <Loading /> : <>
           <div style={S.statGrid}>
             <Stat icon={<TrendingUp size={16} />} label="My sales total" value={money(myTotal)} accent />
-            <Stat icon={<FileText size={16} />} label="My transactions" value={mine.length} />
+            <button onClick={() => setShowTx(true)}
+              style={{ ...S.stat, textAlign: "left", cursor: "pointer", border: `1px solid ${line}`, position: "relative" }}>
+              <div style={S.statIcon}><FileText size={16} /></div>
+              <div style={S.statLabel}>My transactions</div>
+              <div style={S.statValue}>{mine.length}</div>
+              <span style={{ position: "absolute", right: 12, bottom: 12, fontSize: 11, color: accent, fontWeight: 700 }}>View ›</span>
+            </button>
           </div>
           <button style={{ ...S.btn, ...S.btnGhost, width: "100%", marginBottom: 4 }} onClick={() => setClosingDay(true)}>
             <FileText size={17} /> Close day &amp; submit cash-up
@@ -555,12 +562,15 @@ function Seller({ user, onExit, businessName }) {
               );
             })}
           </div>
-          <SectionTitle>My transactions</SectionTitle>
-          <p style={S.hint}>Tap any sale to view its receipt. Filter by date to find older ones.</p>
-          <SellerInvoices sales={mine} businessName={businessName} sellerName={user.name}
-            products={products} businessId={user.business_id} online={online} />
         </>}
       </div>
+
+      {showTx && (
+        <Modal onClose={() => setShowTx(false)} title="🧾 My transactions">
+          <SellerInvoices sales={mine} businessName={businessName} sellerName={user.name}
+            products={products} businessId={user.business_id} online={online} />
+        </Modal>
+      )}
 
       {/* floating basket button */}
       {cart.length > 0 && (
