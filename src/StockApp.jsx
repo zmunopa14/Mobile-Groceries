@@ -480,7 +480,7 @@ function Seller({ user, onExit, businessName }) {
     };
 
     const saveOffline = () => {
-      queueSale(user.business_id, { items, seller: user.name, customer, phone });
+      queueSale(user.business_id, { items, seller: user.name, customer, phone, when: new Date().toISOString() });
       if (setPendingCount) setPendingCount(getPending(user.business_id).length);
       setReceipt({ ...baseReceipt, no: "PENDING", offline: true });
       setCart([]); setShowCart(false);
@@ -555,9 +555,10 @@ function Seller({ user, onExit, businessName }) {
               );
             })}
           </div>
-          <SectionTitle>My recent invoices</SectionTitle>
-          <p style={S.hint}>Tap an invoice to check what you sold.</p>
-          <SellerInvoices sales={mine} businessName={businessName} sellerName={user.name} />
+          <SectionTitle>My transactions</SectionTitle>
+          <p style={S.hint}>Tap any sale to view its receipt. Filter by date to find older ones.</p>
+          <SellerInvoices sales={mine} businessName={businessName} sellerName={user.name}
+            products={products} businessId={user.business_id} online={online} />
         </>}
       </div>
 
@@ -762,13 +763,39 @@ function receiptText(r) {
 }
 
 // Seller's own invoices — tappable, opens the receipt to review
-function SellerInvoices({ sales, businessName, sellerName }) {
+function SellerInvoices({ sales, businessName, sellerName, products, businessId, online }) {
   const [view, setView] = useState(null);
-  const invoices = groupByInvoice(sales).slice(0, 20);
-  if (invoices.length === 0) return <p style={S.empty}>No sales yet.</p>;
+  const [dateQ, setDateQ] = useState("");
+
+  // Synced invoices (from server/cache)
+  let invoices = groupByInvoice(sales);
+
+  // Pending offline sales made by this seller on this phone → show as PENDING
+  const pendingList = getPending(businessId).filter((s) => s.seller === sellerName);
+  const pendingInvoices = pendingList.map((s, idx) => {
+    const lines = s.items.map((it) => {
+      const p = (products || []).find((pp) => pp.id === it.product_id);
+      const price = p ? Number(p.price) : 0;
+      return { product_name: p ? p.name : "Item", qty: it.qty, total: price * it.qty };
+    });
+    return {
+      key: `pending-${idx}`, invoice_no: null, pending: true,
+      when: s.when || new Date().toISOString(),
+      customer: s.customer || "", phone: s.phone || "",
+      lines, total: lines.reduce((a, l) => a + l.total, 0),
+    };
+  });
+
+  let all = [...pendingInvoices, ...invoices];
+
+  if (dateQ) {
+    all = all.filter((inv) => localDateStr(new Date(inv.when)) === dateQ);
+  }
+  const shown = dateQ ? all : all.slice(0, 30);
 
   const openReceipt = (inv) => setView({
-    no: inv.invoice_no || "—",
+    no: inv.pending ? "PENDING" : (inv.invoice_no || "—"),
+    offline: inv.pending,
     when: new Date(inv.when),
     seller: sellerName,
     business: businessName,
@@ -779,11 +806,24 @@ function SellerInvoices({ sales, businessName, sellerName }) {
 
   return (
     <>
+      <div style={{ ...S.fieldWrap, marginBottom: 10 }}>
+        <span style={S.fieldLabel}>Filter by date</span>
+        <input style={S.input} type="date" value={dateQ} onChange={(e) => setDateQ(e.target.value)} />
+        {dateQ && <button style={{ ...S.btn, ...S.btnGhost, marginTop: 8, padding: "8px 12px" }} onClick={() => setDateQ("")}>Show recent</button>}
+      </div>
+      {!online && <p style={{ ...S.hint, color: "#B26A00" }}>Offline — showing sales saved on this phone. Older synced sales appear once you’re back online.</p>}
+
+      {shown.length === 0 && <p style={S.empty}>{dateQ ? "No sales on that date." : "No sales yet."}</p>}
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        {invoices.map((inv) => (
+        {shown.map((inv) => (
           <button key={inv.key} style={{ ...S.card, width: "100%", textAlign: "left", cursor: "pointer" }} onClick={() => openReceipt(inv)}>
             <div style={{ flex: 1 }}>
-              <div style={S.cardName}>{inv.customer || "No name"} {inv.invoice_no && <span style={S.invTag}>{inv.invoice_no}</span>}</div>
+              <div style={S.cardName}>
+                {inv.customer || "No name"}{" "}
+                {inv.pending
+                  ? <span style={{ ...S.invTag, background: "#FFF1DA", color: "#B26A00" }}>pending</span>
+                  : inv.invoice_no && <span style={S.invTag}>{inv.invoice_no}</span>}
+              </div>
               <div style={S.cardMeta}>
                 {new Date(inv.when).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
                 {" · "}{inv.lines.length} item{inv.lines.length > 1 ? "s" : ""}
