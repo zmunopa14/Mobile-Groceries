@@ -775,7 +775,16 @@ function receiptText(r) {
 // Seller's own invoices — tappable, opens the receipt to review
 function SellerInvoices({ sales, businessName, sellerName, products, businessId, online }) {
   const [view, setView] = useState(null);
-  const [dateQ, setDateQ] = useState("");
+  const [prodQ, setProdQ] = useState("");
+  const [fromQ, setFromQ] = useState("");
+  const [toQ, setToQ] = useState("");
+
+  const inRange = (when) => {
+    const d = localDateStr(new Date(when));
+    if (fromQ && d < fromQ) return false;
+    if (toQ && d > toQ) return false;
+    return true;
+  };
 
   // Synced invoices (from server/cache)
   let invoices = groupByInvoice(sales);
@@ -798,10 +807,29 @@ function SellerInvoices({ sales, businessName, sellerName, products, businessId,
 
   let all = [...pendingInvoices, ...invoices];
 
-  if (dateQ) {
-    all = all.filter((inv) => localDateStr(new Date(inv.when)) === dateQ);
+  // Product summary (my own sales of that product, over the date range)
+  let prodSummary = null;
+  if (prodQ.trim()) {
+    const q = prodQ.trim().toLowerCase();
+    let units = 0, total = 0, count = 0;
+    all.forEach((inv) => {
+      if (!inRange(inv.when)) return;
+      inv.lines.forEach((l) => {
+        if ((l.product_name || "").toLowerCase().includes(q)) {
+          units += Number(l.qty); total += Number(l.total); count += 1;
+        }
+      });
+    });
+    prodSummary = { units, total, count };
   }
-  const shown = dateQ ? all : all.slice(0, 30);
+
+  all = all.filter((inv) => inRange(inv.when));
+  if (prodQ.trim()) {
+    const q = prodQ.trim().toLowerCase();
+    all = all.filter((inv) => inv.lines.some((l) => (l.product_name || "").toLowerCase().includes(q)));
+  }
+  const filtering = prodQ.trim() || fromQ || toQ;
+  const shown = filtering ? all : all.slice(0, 30);
 
   const openReceipt = (inv) => setView({
     no: inv.pending ? "PENDING" : (inv.invoice_no || "—"),
@@ -816,14 +844,32 @@ function SellerInvoices({ sales, businessName, sellerName, products, businessId,
 
   return (
     <>
-      <div style={{ ...S.fieldWrap, marginBottom: 10 }}>
-        <span style={S.fieldLabel}>Filter by date</span>
-        <input style={S.input} type="date" value={dateQ} onChange={(e) => setDateQ(e.target.value)} />
-        {dateQ && <button style={{ ...S.btn, ...S.btnGhost, marginTop: 8, padding: "8px 12px" }} onClick={() => setDateQ("")}>Show recent</button>}
+      <div style={S.searchWrap}>
+        <Search size={16} style={{ color: "#8A8475", flexShrink: 0 }} />
+        <input style={S.searchInput} value={prodQ} placeholder="Search a product…" onChange={(e) => setProdQ(e.target.value)} />
+        {prodQ && <button style={S.searchClear} onClick={() => setProdQ("")}><X size={15} /></button>}
       </div>
+      <div style={{ display: "flex", gap: 10, marginBottom: 10 }}>
+        <label style={{ ...S.fieldWrap, flex: 1, marginBottom: 0 }}>
+          <span style={S.fieldLabel}>From</span>
+          <input style={S.input} type="date" value={fromQ} onChange={(e) => setFromQ(e.target.value)} />
+        </label>
+        <label style={{ ...S.fieldWrap, flex: 1, marginBottom: 0 }}>
+          <span style={S.fieldLabel}>To</span>
+          <input style={S.input} type="date" value={toQ} onChange={(e) => setToQ(e.target.value)} />
+        </label>
+      </div>
+      {(fromQ || toQ) && <button style={{ ...S.btn, ...S.btnGhost, padding: "8px 12px", marginBottom: 10 }} onClick={() => { setFromQ(""); setToQ(""); }}>Clear dates</button>}
       {!online && <p style={{ ...S.hint, color: "#B26A00" }}>Offline — showing sales saved on this phone. Older synced sales appear once you’re back online.</p>}
 
-      {shown.length === 0 && <p style={S.empty}>{dateQ ? "No sales on that date." : "No sales yet."}</p>}
+      {prodSummary && (
+        <div style={{ ...S.cartTotalRow, marginBottom: 10 }}>
+          <span>“{prodQ.trim()}” — {prodSummary.units} pack{prodSummary.units === 1 ? "" : "s"}</span>
+          <span>{money(prodSummary.total)}</span>
+        </div>
+      )}
+
+      {shown.length === 0 && <p style={S.empty}>{filtering ? "No sales match." : "No sales yet."}</p>}
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {shown.map((inv) => (
           <button key={inv.key} style={{ ...S.card, width: "100%", textAlign: "left", cursor: "pointer" }} onClick={() => openReceipt(inv)}>
@@ -1179,21 +1225,38 @@ function groupByInvoice(sales) {
 
 function Transactions({ sales, products, businessId, onChange, onDeleteSale }) {
   const [nameQ, setNameQ] = useState("");
-  const [dateQ, setDateQ] = useState("");
+  const [prodQ, setProdQ] = useState("");
+  const [fromQ, setFromQ] = useState("");
+  const [toQ, setToQ] = useState("");
   const [editing, setEditing] = useState(null);
+
+  const inRange = (when) => {
+    const d = localDateStr(new Date(when));
+    if (fromQ && d < fromQ) return false;
+    if (toQ && d > toQ) return false;
+    return true;
+  };
+
+  // Product summary: total units + total $ for the product search, over the date range
+  let prodSummary = null;
+  if (prodQ.trim()) {
+    const q = prodQ.trim().toLowerCase();
+    const matched = sales.filter((s) => (s.product_name || "").toLowerCase().includes(q) && inRange(s.sold_at));
+    const units = matched.reduce((a, s) => a + Number(s.qty), 0);
+    const total = matched.reduce((a, s) => a + Number(s.total), 0);
+    prodSummary = { units, total, count: matched.length };
+  }
 
   let invoices = groupByInvoice(sales);
   if (nameQ.trim()) {
     const q = nameQ.trim().toLowerCase();
     invoices = invoices.filter((inv) => (inv.customer || "").toLowerCase().includes(q));
   }
-  if (dateQ) {
-    invoices = invoices.filter((inv) => {
-      const d = new Date(inv.when);
-      const local = new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
-      return local === dateQ;
-    });
+  if (prodQ.trim()) {
+    const q = prodQ.trim().toLowerCase();
+    invoices = invoices.filter((inv) => inv.lines.some((l) => (l.product_name || "").toLowerCase().includes(q)));
   }
+  invoices = invoices.filter((inv) => inRange(inv.when));
 
   return (
     <>
@@ -1203,11 +1266,34 @@ function Transactions({ sales, products, businessId, onChange, onDeleteSale }) {
         <input style={S.searchInput} value={nameQ} placeholder="Search customer name…" onChange={(e) => setNameQ(e.target.value)} />
         {nameQ && <button style={S.searchClear} onClick={() => setNameQ("")}><X size={15} /></button>}
       </div>
-      <div style={{ ...S.fieldWrap, marginBottom: 14 }}>
-        <span style={S.fieldLabel}>Filter by date</span>
-        <input style={S.input} type="date" value={dateQ} onChange={(e) => setDateQ(e.target.value)} />
-        {dateQ && <button style={{ ...S.btn, ...S.btnGhost, marginTop: 8, padding: "8px 12px" }} onClick={() => setDateQ("")}>Clear date</button>}
+      <div style={S.searchWrap}>
+        <Search size={16} style={{ color: "#8A8475", flexShrink: 0 }} />
+        <input style={S.searchInput} value={prodQ} placeholder="Search product (e.g. Cascade)…" onChange={(e) => setProdQ(e.target.value)} />
+        {prodQ && <button style={S.searchClear} onClick={() => setProdQ("")}><X size={15} /></button>}
       </div>
+      <div style={{ display: "flex", gap: 10, marginBottom: 14 }}>
+        <label style={{ ...S.fieldWrap, flex: 1, marginBottom: 0 }}>
+          <span style={S.fieldLabel}>From</span>
+          <input style={S.input} type="date" value={fromQ} onChange={(e) => setFromQ(e.target.value)} />
+        </label>
+        <label style={{ ...S.fieldWrap, flex: 1, marginBottom: 0 }}>
+          <span style={S.fieldLabel}>To</span>
+          <input style={S.input} type="date" value={toQ} onChange={(e) => setToQ(e.target.value)} />
+        </label>
+      </div>
+      {(fromQ || toQ) && <button style={{ ...S.btn, ...S.btnGhost, padding: "8px 12px", marginBottom: 12 }} onClick={() => { setFromQ(""); setToQ(""); }}>Clear dates</button>}
+
+      {prodSummary && (
+        <div style={{ ...S.reportHead, background: `linear-gradient(135deg,${accent},${lime})` }}>
+          <Package size={18} />
+          <div style={{ flex: 1 }}>
+            <div style={{ ...S.cardName, color: "#fff" }}>“{prodQ.trim()}” sold</div>
+            <div style={{ ...S.cardMeta, color: "rgba(255,255,255,0.85)" }}>
+              {prodSummary.units} pack{prodSummary.units === 1 ? "" : "s"} · {money(prodSummary.total)} · {prodSummary.count} sale{prodSummary.count === 1 ? "" : "s"}
+            </div>
+          </div>
+        </div>
+      )}
 
       {invoices.length === 0 && <p style={S.empty}>No invoices match your search.</p>}
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
