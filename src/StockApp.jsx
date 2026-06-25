@@ -619,7 +619,8 @@ function Seller({ user, onExit, businessName }) {
 
       {showTx && (
         <Modal onClose={() => setShowTx(false)} title="🧾 My transactions">
-          <SellerInvoices sales={mine} businessName={businessName} sellerName={user.name}
+          <p style={{ ...S.hint, marginTop: 0 }}>Showing sales since your last cash-up. Use the date filter to see older days.</p>
+          <SellerInvoices sales={sinceCashup} allSales={mine} businessName={businessName} sellerName={user.name}
             products={products} businessId={user.business_id} online={online} />
         </Modal>
       )}
@@ -744,7 +745,7 @@ function CartModal({ cart, total, customers = [], onClose, onRemove, onCheckout 
               {suggestions.map((c) => (
                 <button key={c.name} style={S.sugItem} onClick={() => pick(c)}>
                   <span style={{ fontWeight: 600 }}>{c.name}</span>
-                  {c.phone && <span style={{ color: "#8A8475", fontSize: 12 }}>{c.phone}</span>}
+                  {c.phone && <span style={{ color: muted, fontSize: 12 }}>{c.phone}</span>}
                 </button>
               ))}
             </div>
@@ -799,7 +800,7 @@ function ReceiptModal({ receipt, onClose }) {
         )}
         {receipt.lines.map((l, i) => (
           <div key={i} style={S.receiptLine}>
-            <span style={{ flex: 1 }}>{l.name} <span style={{ color: "#8A8475" }}>×{l.units}</span></span>
+            <span style={{ flex: 1 }}>{l.name} <span style={{ color: muted }}>×{l.units}</span></span>
             <span style={{ fontWeight: 700 }}>{money(l.total)}</span>
           </div>
         ))}
@@ -830,7 +831,7 @@ function receiptText(r) {
 }
 
 // Seller's own invoices — tappable, opens the receipt to review
-function SellerInvoices({ sales, businessName, sellerName, products, businessId, online }) {
+function SellerInvoices({ sales, allSales, businessName, sellerName, products, businessId, online }) {
   const [view, setView] = useState(null);
   const [prodQ, setProdQ] = useState("");
   const [fromQ, setFromQ] = useState("");
@@ -843,8 +844,10 @@ function SellerInvoices({ sales, businessName, sellerName, products, businessId,
     return true;
   };
 
-  // Synced invoices (from server/cache)
-  let invoices = groupByInvoice(sales);
+  // Default view = sales since last cash-up. When a date filter is set, search
+  // the full history (allSales) so older days can still be looked up.
+  const source = (fromQ || toQ) ? (allSales || sales) : sales;
+  let invoices = groupByInvoice(source);
 
   // Pending offline sales made by this seller on this phone → show as PENDING
   const pendingList = getPending(businessId).filter((s) => s.seller === sellerName);
@@ -902,7 +905,7 @@ function SellerInvoices({ sales, businessName, sellerName, products, businessId,
   return (
     <>
       <div style={S.searchWrap}>
-        <Search size={16} style={{ color: "#8A8475", flexShrink: 0 }} />
+        <Search size={16} style={{ color: muted, flexShrink: 0 }} />
         <input style={S.searchInput} value={prodQ} placeholder="Search a product…" onChange={(e) => setProdQ(e.target.value)} />
         {prodQ && <button style={S.searchClear} onClick={() => setProdQ("")}><X size={15} /></button>}
       </div>
@@ -1426,7 +1429,7 @@ function Transactions({ sales, products, businessId, onChange, onDeleteSale }) {
     <>
       <SectionTitle>Find sales by product</SectionTitle>
       <div style={S.searchWrap}>
-        <Search size={16} style={{ color: "#8A8475", flexShrink: 0 }} />
+        <Search size={16} style={{ color: muted, flexShrink: 0 }} />
         <input style={S.searchInput} value={prodQ} placeholder="Search product (e.g. Cascade)…" onChange={(e) => setProdQ(e.target.value)} />
         {prodQ && <button style={S.searchClear} onClick={() => setProdQ("")}><X size={15} /></button>}
       </div>
@@ -1785,8 +1788,8 @@ function Compare({ sales }) {
       <div style={{ display: "flex", alignItems: "center", padding: "10px 0", borderBottom: `1px solid ${line}` }}>
         <div style={{ flex: 1, fontWeight: 600 }}>{label}</div>
         <div style={{ width: 90, textAlign: "right", fontWeight: 800, color: accent }}>{fmt(a)}</div>
-        <div style={{ width: 90, textAlign: "right", fontWeight: 800, color: "#8A8475" }}>{fmt(b)}</div>
-        <div style={{ width: 70, textAlign: "right", fontSize: 12, fontWeight: 700, color: up ? "#1F9D55" : down ? "#C0392B" : "#8A8475" }}>
+        <div style={{ width: 90, textAlign: "right", fontWeight: 800, color: muted }}>{fmt(b)}</div>
+        <div style={{ width: 70, textAlign: "right", fontSize: 12, fontWeight: 700, color: up ? "#1F9D55" : down ? "#C0392B" : muted }}>
           {up ? "▲" : down ? "▼" : ""}{fmt(Math.abs(diff))}
         </div>
       </div>
@@ -1823,14 +1826,14 @@ function Compare({ sales }) {
           <input style={S.input} type="date" value={aTo} onChange={(e) => setATo(e.target.value)} />
         </div>
         <div style={{ flex: 1 }}>
-          <div style={{ ...S.fieldLabel, color: "#8A8475" }}>Period B</div>
+          <div style={{ ...S.fieldLabel, color: muted }}>Period B</div>
           <input style={{ ...S.input, marginBottom: 4 }} type="date" value={bFrom} onChange={(e) => setBFrom(e.target.value)} />
           <input style={S.input} type="date" value={bTo} onChange={(e) => setBTo(e.target.value)} />
         </div>
       </div>
 
       <div style={{ ...S.card, flexDirection: "column", alignItems: "stretch" }}>
-        <div style={{ display: "flex", fontSize: 11, color: "#8A8475", fontWeight: 700, textTransform: "uppercase" }}>
+        <div style={{ display: "flex", fontSize: 11, color: muted, fontWeight: 700, textTransform: "uppercase" }}>
           <div style={{ flex: 1 }}></div>
           <div style={{ width: 90, textAlign: "right" }}>A</div>
           <div style={{ width: 90, textAlign: "right" }}>B</div>
@@ -1846,7 +1849,7 @@ function Compare({ sales }) {
       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
         {weeks.map((w, i) => (
           <div key={i} style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <div style={{ width: 96, fontSize: 11, color: "#6B6555" }}>{w.label}</div>
+            <div style={{ width: 96, fontSize: 11, color: muted }}>{w.label}</div>
             <div style={{ flex: 1, background: "#EFEADD", borderRadius: 6, height: 22, position: "relative", overflow: "hidden" }}>
               <div style={{ width: `${(w.total / maxWeek) * 100}%`, background: `linear-gradient(90deg,${accent},${lime})`, height: "100%", borderRadius: 6 }} />
             </div>
@@ -2045,7 +2048,7 @@ function SectionTitle({ children }) { return <div style={S.sectionTitle}>{childr
 function SearchBar({ value, onChange }) {
   return (
     <div style={S.searchWrap}>
-      <Search size={16} style={{ color: "#8A8475", flexShrink: 0 }} />
+      <Search size={16} style={{ color: muted, flexShrink: 0 }} />
       <input style={S.searchInput} value={value} placeholder="Search products…"
         onChange={(e) => onChange(e.target.value)} />
       {value && <button style={S.searchClear} onClick={() => onChange("")}><X size={15} /></button>}
@@ -2184,12 +2187,17 @@ function DeliveryScene() {
 }
 
 function HeroImage() {
-  // Optional real photo: drop hero.jpg into the project to use it instead.
+  // Optional real photo / 3D render: drop hero.jpg into the project's public folder.
+  // It renders here in a premium gold-edged frame with a soft glow.
   const [ok, setOk] = useState(true);
   if (!ok) return <DeliveryScene />;
   return (
-    <img src="/hero.jpg" alt="" onError={() => setOk(false)}
-      style={{ width: "100%", maxHeight: 170, objectFit: "cover", borderRadius: 18, marginBottom: 4, boxShadow: "0 12px 30px rgba(0,0,0,0.4)" }} />
+    <div style={{ position: "relative", marginBottom: 16, borderRadius: 20, overflow: "hidden",
+      border: "1px solid rgba(230,196,77,0.45)", boxShadow: "0 20px 50px rgba(0,0,0,0.55), 0 0 0 1px rgba(230,196,77,0.15)" }}>
+      <img src="/hero.jpg" alt="" onError={() => setOk(false)}
+        style={{ width: "100%", maxHeight: 200, objectFit: "cover", display: "block" }} />
+      <div style={{ position: "absolute", inset: 0, background: "linear-gradient(180deg, rgba(7,22,15,0) 40%, rgba(7,22,15,0.55) 100%)" }} />
+    </div>
   );
 }
 function SetupNotice() {
@@ -2203,137 +2211,4 @@ function SetupNotice() {
           two lines at the top (marked “YOUR-PROJECT” / “YOUR-ANON-KEY”). You’ll find them in
           Supabase → Project Settings → API. Then run the setup.sql file once in the SQL Editor.
         </p>
-      </div>
-    </div>
-  );
-}
-
-// ============================================================
-// 11. STYLES
-// ============================================================
-const ink = "#152019", paper = "#F3EFE6", accent = "#1F9D55", line = "#E2DCCD";
-const lime = "#7CC243", mango = "#F5A623", berry = "#E0457B", sky = "#2FA7D8", grape = "#7C5CD6";
-const gold = "#C9A227", goldLt = "#E6C44D", darkbg = "#0c241d", darkbg2 = "#11342a", darkcard = "rgba(255,255,255,0.07)";
-const S = {
-  shell: { maxWidth: 520, margin: "0 auto", minHeight: "100vh", background: "radial-gradient(120% 60% at 50% 0%, #FFFDF6 0%, #F6FBF2 35%, #F1EDE2 100%)", fontFamily: "'Inter', system-ui, sans-serif", color: ink, paddingBottom: 60, position: "relative" },
-  loadDot: { width: 22, height: 22, borderRadius: "50%", border: `3px solid ${line}`, borderTopColor: accent, animation: "spin 0.8s linear infinite", margin: "0 auto" },
-
-  loginCard: { padding: "30px 26px 40px", maxWidth: 390, margin: "0 auto", textAlign: "center", animation: "popIn 0.5s ease", background: "rgba(12,36,29,0.72)", backdropFilter: "blur(10px)", borderRadius: 26, border: "1px solid rgba(230,196,77,0.25)", boxShadow: "0 30px 70px rgba(0,0,0,0.5)" },
-  loginDarkShell: { maxWidth: 520, margin: "0 auto", minHeight: "100vh", background: `radial-gradient(130% 80% at 50% -10%, ${darkbg2} 0%, ${darkbg} 60%, #07160f 100%)`, fontFamily: "'Inter', system-ui, sans-serif", color: "#EAF3EC", display: "flex", alignItems: "center", justifyContent: "center", padding: "20px", position: "relative", overflow: "hidden" },
-  heroWrap: { borderRadius: 18, overflow: "hidden", marginBottom: 16, border: "1px solid rgba(230,196,77,0.2)", boxShadow: "0 14px 34px rgba(0,0,0,0.4)" },
-  watermark: { position: "absolute", inset: 0, width: "100%", height: "100%", opacity: 0.05, pointerEvents: "none", zIndex: 0 },
-  watermarkLight: { position: "absolute", top: 60, left: 0, width: "100%", height: 520, opacity: 0.035, pointerEvents: "none", zIndex: 0 },
-  logoMark: { width: 60, height: 60, borderRadius: 18, background: `linear-gradient(135deg,${goldLt},${gold})`, color: darkbg, display: "grid", placeItems: "center", margin: "0 auto 14px", boxShadow: "0 10px 30px rgba(201,162,39,0.4)", animation: "bob 3s ease-in-out infinite" },
-  loginTitle: { fontSize: 40, fontWeight: 800, letterSpacing: "-0.03em", margin: "0 0 6px", background: `linear-gradient(135deg,${goldLt} 0%, #fff 45%, ${lime} 100%)`, WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent", backgroundClip: "text" },
-  loginSub: { fontSize: 14, color: "rgba(234,243,236,0.7)", margin: "0 0 22px", lineHeight: 1.5 },
-  errTxt: { color: "#C0392B", fontSize: 13.5, marginTop: 12 },
-
-  pinDot: { width: 14, height: 14, borderRadius: "50%", border: `2px solid rgba(230,196,77,0.5)`, background: "rgba(255,255,255,0.06)", transition: "all 0.2s ease" },
-  pinDotFull: { background: goldLt, borderColor: goldLt, transform: "scale(1.2)" },
-  keypad: { display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 10, marginTop: 6 },
-  key: { padding: "16px 0", fontSize: 20, fontWeight: 700, background: "#fff", border: `1px solid ${line}`, borderRadius: 14, cursor: "pointer", color: ink, display: "grid", placeItems: "center", boxShadow: "0 2px 6px rgba(0,0,0,0.04)" },
-  keyDark: { background: "rgba(255,255,255,0.06)", border: "1px solid rgba(230,196,77,0.22)", color: "#EAF3EC", boxShadow: "none" },
-  inputDark: { width: "100%", boxSizing: "border-box", padding: "13px 14px", border: "1px solid rgba(230,196,77,0.25)", borderRadius: 12, fontSize: 15, background: "rgba(255,255,255,0.07)", color: "#fff", outline: "none" },
-  btnGold: { background: `linear-gradient(135deg,${goldLt},${gold})`, color: darkbg, boxShadow: "0 8px 22px rgba(201,162,39,0.4)", fontWeight: 800 },
-
-  header: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "22px 20px 14px", position: "relative", zIndex: 1 },
-  headTitle: { fontSize: 26, fontWeight: 800, letterSpacing: "-0.02em", background: `linear-gradient(120deg,${accent} 0%, ${lime} 60%, ${gold} 100%)`, WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent", backgroundClip: "text" },
-  headSub: { fontSize: 12, color: "#8A8475", textTransform: "uppercase", letterSpacing: "0.06em" },
-  exitBtn: { display: "flex", alignItems: "center", gap: 6, background: "#fff", border: `1px solid ${line}`, padding: "7px 12px", borderRadius: 10, fontSize: 13, color: ink, cursor: "pointer" },
-
-  alert: { display: "flex", alignItems: "center", gap: 8, margin: "0 20px 8px", padding: "11px 14px", background: "#FFF1DA", color: "#B26A00", borderRadius: 12, fontSize: 13, animation: "popIn 0.3s ease" },
-
-  tabs: { display: "flex", gap: 4, padding: "6px 16px 0", overflowX: "auto", position: "relative", zIndex: 1 },
-  tab: { padding: "9px 14px", border: "none", background: "transparent", fontSize: 13.5, fontWeight: 600, color: "#8A8475", cursor: "pointer", borderRadius: 10, whiteSpace: "nowrap" },
-  tabActive: { background: `linear-gradient(135deg,${accent},${lime})`, color: "#fff", boxShadow: "0 4px 12px rgba(31,157,85,0.3)" },
-
-  body: { padding: "16px 20px 0", position: "relative", zIndex: 1 },
-  statGrid: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 8 },
-  stat: { background: "#fff", border: `1px solid ${line}`, borderRadius: 16, padding: "14px 15px", animation: "rise 0.4s ease both", boxShadow: "0 4px 14px rgba(0,0,0,0.04)" },
-  statAccent: { background: `linear-gradient(135deg,${accent} 0%, ${lime} 100%)`, border: "none", boxShadow: "0 12px 26px rgba(31,157,85,0.34)", position: "relative", overflow: "hidden", borderTop: `3px solid ${goldLt}` },
-  statIcon: { width: 32, height: 32, borderRadius: 10, background: "#EAF7EE", color: accent, display: "grid", placeItems: "center", marginBottom: 9 },
-  statLabel: { fontSize: 11.5, color: "#8A8475", marginBottom: 3 },
-  statValue: { fontSize: 22, fontWeight: 800, letterSpacing: "-0.02em" },
-
-  sectionTitle: { fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", color: "#8A8475", margin: "22px 0 10px" },
-  hint: { fontSize: 13, color: "#8A8475", margin: "-4px 0 12px", lineHeight: 1.5 },
-  empty: { fontSize: 13.5, color: "#9A9384", textAlign: "center", padding: "20px 0" },
-
-  card: { display: "flex", alignItems: "center", gap: 12, background: "#fff", border: `1px solid ${line}`, borderRadius: 16, padding: "13px 15px", boxShadow: "0 4px 14px rgba(20,32,25,0.05)", borderTop: `2px solid rgba(201,162,39,0.18)` },
-  cardName: { fontSize: 15, fontWeight: 700, letterSpacing: "-0.01em" },
-  cardMeta: { fontSize: 12.5, color: "#8A8475", marginTop: 2 },
-  lowTag: { fontSize: 10, background: "#FFE2E2", color: "#C0392B", padding: "2px 7px", borderRadius: 20, fontWeight: 700, marginLeft: 6, verticalAlign: "middle" },
-  outTag: { fontSize: 10, background: "#C0392B", color: "#fff", padding: "2px 8px", borderRadius: 20, fontWeight: 700, marginLeft: 6, verticalAlign: "middle" },
-  invTag: { fontSize: 10, background: "#EAF7EE", color: accent, padding: "2px 8px", borderRadius: 20, fontWeight: 700, marginLeft: 6, verticalAlign: "middle", fontFamily: "monospace" },
-  sugBox: { position: "absolute", top: "100%", left: 0, right: 0, background: "#fff", border: `1px solid ${line}`, borderRadius: 10, boxShadow: "0 8px 20px rgba(0,0,0,0.12)", zIndex: 30, overflow: "hidden", marginTop: 2 },
-  sugItem: { display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%", padding: "10px 13px", border: "none", borderBottom: `1px solid ${line}`, background: "#fff", cursor: "pointer", textAlign: "left" },
-  miniStat: { flex: 1, background: "#F6FBF2", borderRadius: 10, padding: "8px 10px", textAlign: "center" },
-  miniLabel: { fontSize: 10.5, color: "#8A8475", textTransform: "uppercase", letterSpacing: "0.04em" },
-  miniVal: { fontSize: 15, fontWeight: 800, marginTop: 2 },
-
-  qtyCtrl: { display: "flex", alignItems: "center", gap: 8 },
-  qtyCol: { display: "flex", flexDirection: "column", gap: 6 },
-  qtyTiny: { minWidth: 30, textAlign: "center", fontSize: 11, color: "#8A8475", fontWeight: 600 },
-  qtyBtn: { width: 30, height: 30, borderRadius: 9, border: `1px solid ${line}`, background: "#F6FBF2", display: "grid", placeItems: "center", cursor: "pointer", color: accent },
-  qtyNum: { minWidth: 28, textAlign: "center", fontWeight: 800, fontSize: 16 },
-  delBtn: { background: "transparent", border: "none", color: "#C0392B", cursor: "pointer", padding: 4, display: "grid", placeItems: "center" },
-  editBtn: { background: "transparent", border: "none", color: accent, cursor: "pointer", padding: 4, display: "grid", placeItems: "center" },
-
-  sellBtn: { background: `linear-gradient(135deg,${accent},${lime})`, color: "#fff", border: "none", padding: "10px 18px", borderRadius: 12, fontWeight: 800, fontSize: 14, cursor: "pointer", boxShadow: "0 4px 12px rgba(31,157,85,0.3)" },
-  sellBtnOff: { background: "#D9D3C4", color: "#fff", cursor: "not-allowed", boxShadow: "none" },
-
-  saleRow: { display: "flex", alignItems: "center", gap: 12, padding: "10px 14px", background: "#fff", border: `1px solid ${line}`, borderRadius: 13 },
-  saleName: { fontSize: 14, fontWeight: 700 },
-  saleQty: { color: "#8A8475", fontWeight: 500 },
-  titheTag: { fontSize: 11.5, color: accent, fontWeight: 600, marginTop: 1 },
-
-  reportHead: { display: "flex", alignItems: "center", gap: 12, background: `linear-gradient(135deg,${grape},${berry})`, color: "#fff", padding: "16px 18px", borderRadius: 16, marginBottom: 14, boxShadow: "0 8px 22px rgba(124,92,214,0.3)" },
-
-  btn: { display: "flex", alignItems: "center", justifyContent: "center", gap: 8, border: "none", padding: "14px 16px", borderRadius: 14, fontSize: 14.5, fontWeight: 800, cursor: "pointer" },
-  btnDark: { background: `linear-gradient(135deg,${accent},${lime})`, color: "#fff", boxShadow: "0 6px 16px rgba(31,157,85,0.3)" },
-  btnGhost: { background: "#fff", color: ink, border: `1px solid ${line}` },
-  btnWarn: { background: `linear-gradient(135deg,${mango},#E8820C)`, color: "#fff", boxShadow: "0 6px 16px rgba(245,166,35,0.35)" },
-
-  fieldWrap: { display: "block", marginBottom: 12, textAlign: "left" },
-  fieldLabel: { display: "block", fontSize: 12.5, fontWeight: 600, color: "#6B6B5E", marginBottom: 6 },
-  input: { width: "100%", boxSizing: "border-box", padding: "11px 13px", borderRadius: 10, border: `1px solid ${line}`, fontSize: 15, background: "#fff", color: ink, outline: "none" },
-
-  overlay: { position: "fixed", inset: 0, background: "rgba(31,36,33,0.45)", display: "grid", placeItems: "end center", zIndex: 50 },
-  modal: { background: paper, width: "100%", maxWidth: 520, borderRadius: "20px 20px 0 0", padding: "20px 20px 30px", maxHeight: "88vh", overflowY: "auto" },
-  modalHead: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 },
-  modalTitle: { fontSize: 19, fontWeight: 800 },
-
-  toast: { position: "fixed", bottom: 24, left: "50%", transform: "translateX(-50%)", background: ink, color: "#fff", padding: "11px 20px", borderRadius: 12, fontSize: 14, fontWeight: 600, zIndex: 60 },
-
-  searchWrap: { display: "flex", alignItems: "center", gap: 8, background: "#fff", border: `1px solid ${line}`, borderRadius: 11, padding: "9px 13px", marginBottom: 12 },
-  searchInput: { flex: 1, border: "none", outline: "none", background: "transparent", fontSize: 14.5, color: ink },
-  searchClear: { background: "transparent", border: "none", color: "#8A8475", cursor: "pointer", padding: 0, display: "grid", placeItems: "center" },
-  sellSummary: { display: "flex", justifyContent: "space-between", alignItems: "center", background: "#EFE9DC", borderRadius: 10, padding: "11px 14px", fontSize: 14.5, marginTop: 4 },
-
-  cardPop: { animation: "pop 0.25s ease", transition: "transform 0.12s ease, box-shadow 0.12s ease" },
-  cardInCart: { borderColor: accent, boxShadow: "0 0 0 1px #3A7D5C inset" },
-  cartBadge: { fontSize: 10, background: accent, color: "#fff", padding: "2px 8px", borderRadius: 20, fontWeight: 700, marginLeft: 8, verticalAlign: "middle" },
-  cartFab: { position: "fixed", bottom: 22, left: 0, right: 0, marginLeft: "auto", marginRight: "auto", width: "fit-content", display: "flex", alignItems: "center", gap: 4, background: `linear-gradient(135deg,${accent},${lime})`, color: "#fff", border: "none", padding: "14px 24px", borderRadius: 30, fontSize: 15, cursor: "pointer", boxShadow: "0 10px 28px rgba(31,157,85,0.45)", zIndex: 55, animation: "popIn 0.3s ease" },
-  cartFabCount: { background: "#fff", color: accent, borderRadius: "50%", minWidth: 22, height: 22, display: "grid", placeItems: "center", fontSize: 12, fontWeight: 800, marginLeft: 4 },
-  cartLine: { display: "flex", alignItems: "center", gap: 10, background: "#fff", border: `1px solid ${line}`, borderRadius: 11, padding: "10px 13px" },
-  cartTotalRow: { display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 18, fontWeight: 800, padding: "12px 14px", background: "#EFE9DC", borderRadius: 11 },
-  receipt: { background: "#fff", border: `1px solid ${line}`, borderRadius: 14, padding: "18px 16px" },
-  receiptDivider: { borderTop: `1px dashed ${line}`, margin: "10px 0" },
-  receiptLine: { display: "flex", justifyContent: "space-between", fontSize: 14, padding: "3px 0" },
-};
-
-if (typeof document !== "undefined" && !document.getElementById("sf-spin")) {
-  const st = document.createElement("style");
-  st.id = "sf-spin";
-  st.textContent = `
-    @keyframes spin{to{transform:rotate(360deg)}}
-    @keyframes pop{0%{transform:scale(0.97);opacity:0.6}100%{transform:scale(1);opacity:1}}
-    @keyframes rise{0%{transform:translateY(14px);opacity:0}100%{transform:translateY(0);opacity:1}}
-    @keyframes popIn{0%{transform:scale(0.9);opacity:0}100%{transform:scale(1);opacity:1}}
-    @keyframes bob{0%,100%{transform:translateY(0)}50%{transform:translateY(-6px)}}
-    button{transition:transform 0.08s ease, filter 0.12s ease}
-    button:active{transform:scale(0.95)}
-    button:hover{filter:brightness(1.05)}
-  `;
-  document.head.appendChild(st);
-}
+     
