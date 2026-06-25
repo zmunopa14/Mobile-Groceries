@@ -333,7 +333,7 @@ function Admin({ user, onExit, businessName }) {
         </div>
       )}
       <Tabs tab={tab} setTab={setTab} items={[
-        ["overview","Overview"],["stock","Stock"],["transactions","Invoices"],["cashups","Cash-ups"],["report","Tuesday report"],["team","Team"],
+        ["overview","Overview"],["stock","Stock"],["transactions","Invoices"],["customers","Customers"],["cashups","Cash-ups"],["report","Tuesday report"],["team","Team"],
       ]} />
       <div style={S.body}>
         {loading ? <Loading /> : <>
@@ -350,6 +350,7 @@ function Admin({ user, onExit, businessName }) {
           </>}
           {tab === "stock" && <StockManager products={products} onChange={refresh} businessId={user.business_id} />}
           {tab === "transactions" && <Transactions sales={sales} products={products} businessId={user.business_id} onChange={refresh} onDeleteSale={deleteSale} />}
+          {tab === "customers" && <Customers sales={sales} />}
           {tab === "cashups" && <CashUps businessId={user.business_id} />}
           {tab === "report" && <Report sales={sales} totalSales={totalSales} totalTithe={totalTithe} cash={cash} low={[...out, ...low]} />}
           {tab === "team" && <TeamManager onChange={refresh} businessId={user.business_id} />}
@@ -1273,6 +1274,74 @@ function EditCashUpModal({ report, onClose, onSave }) {
         <Check size={18} /> {busy ? "Saving…" : "Save changes"}
       </button>
     </Modal>
+  );
+}
+
+// Admin customer list, built from sales history — for building a WhatsApp group etc.
+function Customers({ sales }) {
+  const [q, setQ] = useState("");
+  const [copied, setCopied] = useState("");
+
+  // unique customers with phone, purchase count, last seen, total spent
+  const map = {};
+  sales.forEach((s) => {
+    const name = (s.customer_name || "").trim();
+    if (!name) return;
+    if (!map[name]) map[name] = { name, phone: s.customer_phone || "", count: 0, total: 0, at: s.sold_at };
+    map[name].count += 1;
+    map[name].total += Number(s.total);
+    if (s.customer_phone) map[name].phone = map[name].phone || s.customer_phone;
+    if (new Date(s.sold_at) > new Date(map[name].at)) {
+      map[name].at = s.sold_at;
+      if (s.customer_phone) map[name].phone = s.customer_phone;
+    }
+  });
+  let list = Object.values(map).sort((a, b) => a.name.localeCompare(b.name));
+  const query = q.trim().toLowerCase();
+  if (query) list = list.filter((c) => c.name.toLowerCase().includes(query) || (c.phone || "").includes(query));
+
+  const withPhones = list.filter((c) => c.phone);
+
+  const copy = async (textVal, label) => {
+    try {
+      await navigator.clipboard.writeText(textVal);
+      setCopied(label); setTimeout(() => setCopied(""), 1600);
+    } catch { alert("Could not copy automatically. Long-press to copy:\n\n" + textVal); }
+  };
+  const copyAllNumbers = () => copy(withPhones.map((c) => c.phone).join(", "), "all");
+
+  return (
+    <>
+      <SectionTitle>Customers ({list.length})</SectionTitle>
+      <p style={S.hint}>Built automatically from sales. Use the numbers to create your WhatsApp group.</p>
+
+      <SearchBar value={q} onChange={setQ} />
+
+      {withPhones.length > 0 && (
+        <button style={{ ...S.btn, ...S.btnDark, width: "100%", marginBottom: 12 }} onClick={copyAllNumbers}>
+          {copied === "all" ? "✓ Copied all numbers" : `Copy all ${withPhones.length} phone numbers`}
+        </button>
+      )}
+
+      {list.length === 0 && <p style={S.empty}>No customers yet. They’re added automatically when a sale records a name.</p>}
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {list.map((c) => (
+          <div key={c.name} style={S.card}>
+            <div style={{ flex: 1 }}>
+              <div style={S.cardName}>{c.name}</div>
+              <div style={S.cardMeta}>
+                {c.phone || "no number"} · {c.count} purchase{c.count === 1 ? "" : "s"} · {money(c.total)}
+              </div>
+            </div>
+            {c.phone && (
+              <button style={{ ...S.btn, ...S.btnGhost, padding: "8px 12px" }} onClick={() => copy(c.phone, c.name)}>
+                {copied === c.name ? "✓" : "Copy"}
+              </button>
+            )}
+          </div>
+        ))}
+      </div>
+    </>
   );
 }
 
