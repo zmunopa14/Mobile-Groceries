@@ -166,8 +166,8 @@ function packNote(p) {
 
 function filterProducts(products, search) {
   const q = search.trim().toLowerCase();
-  if (!q) return products;
-  return products.filter((p) => p.name.toLowerCase().includes(q));
+  const list = q ? products.filter((p) => p.name.toLowerCase().includes(q)) : [...products];
+  return list.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
 }
 
 // Parse a pasted price list into products.
@@ -424,7 +424,7 @@ function Admin({ user, onExit, businessName }) {
         </div>
       )}
       <Tabs tab={tab} setTab={setTab} items={[
-        ["overview","Overview"],["stock","Stock"],["transactions","Invoices"],["customers","Customers"],["cashups","Cash-ups"],["report","Tuesday report"],["team","Team"],
+        ["overview","Overview"],["stock","Stock"],["transactions","Invoices"],["customers","Customers"],["compare","Compare"],["cashups","Cash-ups"],["report","Tuesday report"],["team","Team"],
       ]} />
       <div style={S.body}>
         {loading ? <Loading /> : <>
@@ -442,6 +442,7 @@ function Admin({ user, onExit, businessName }) {
           {tab === "stock" && <StockManager products={products} onChange={refresh} businessId={user.business_id} />}
           {tab === "transactions" && <Transactions sales={sales} products={products} businessId={user.business_id} onChange={refresh} onDeleteSale={deleteSale} />}
           {tab === "customers" && <Customers sales={sales} />}
+          {tab === "compare" && <Compare sales={sales} />}
           {tab === "cashups" && <CashUps businessId={user.business_id} />}
           {tab === "report" && <Report sales={sales} totalSales={totalSales} totalTithe={totalTithe} cash={cash} low={[...out, ...low]} />}
           {tab === "team" && <TeamManager onChange={refresh} businessId={user.business_id} />}
@@ -458,14 +459,25 @@ function Seller({ user, onExit, businessName }) {
   const { products, sales, loading, error, refresh, online, pending, setPendingCount } = useData(user.business_id);
   const [toast, setToast] = useState("");
   const [adding, setAdding] = useState(null);   // product being added to cart
-  const [cart, setCart] = useState([]);          // [{product, units}]
+  const cartKey = cacheKey(user.business_id, `cart:${user.name}`);
+  const [cart, setCart] = useState(() => {
+    // Restore an in-progress basket after an accidental logout
+    const saved = store.get(cartKey, []);
+    return Array.isArray(saved) ? saved : [];
+  });          // [{product, units}]
   const [showCart, setShowCart] = useState(false);
   const [receipt, setReceipt] = useState(null);  // completed invoice for sharing
   const [closingDay, setClosingDay] = useState(false);
   const [showTx, setShowTx] = useState(false);
   const [search, setSearch] = useState("");
+  // The seller's running total resets after each cash-up. We remember when they
+  // last closed the day (on this phone) and only count sales since then for the
+  // headline figures. All sales stay in the database and in the list below.
+  const [lastCashup, setLastCashup] = useState(() => store.get(cacheKey(user.business_id, `cashup:${user.name}`), null));
   const mine = sales.filter((s) => s.seller_name === user.name);
-  const myTotal = mine.reduce((a, x) => a + Number(x.total), 0);
+  const sinceCashup = lastCashup ? mine.filter((s) => new Date(s.sold_at) > new Date(lastCashup)) : mine;
+  const myTotal = sinceCashup.reduce((a, x) => a + Number(x.total), 0);
+  const myCount = sinceCashup.length;
 
   const addToCart = (product, units) => {
     setCart((prev) => {
@@ -478,6 +490,26 @@ function Seller({ user, onExit, businessName }) {
     setTimeout(() => setToast(""), 1200);
   };
   const removeFromCart = (id) => setCart((prev) => prev.filter((c) => c.product.id !== id));
+
+  // Keep the basket saved on this phone so an accidental logout doesn't lose it
+  useEffect(() => { store.set(cartKey, cart); }, [cart, cartKey]);
+
+  // If a restored basket references products whose price/name changed, refresh them
+  useEffect(() => {
+    if (cart.length === 0 || products.length === 0) return;
+    setCart((prev) => {
+      let changed = false;
+      const next = prev.map((c) => {
+        const fresh = products.find((p) => p.id === c.product.id);
+        if (fresh && (fresh.price !== c.product.price || fresh.name !== c.product.name)) {
+          changed = true; return { ...c, product: fresh };
+        }
+        return c;
+      });
+      return changed ? next : prev;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [products]);
 
   const cartTotal = cart.reduce((a, c) => a + c.units * Number(c.product.price), 0);
   const cartCount = cart.reduce((a, c) => a + c.units, 0);
@@ -542,12 +574,12 @@ function Seller({ user, onExit, businessName }) {
       <div style={S.body}>
         {loading ? <Loading /> : <>
           <div style={S.statGrid}>
-            <Stat icon={<TrendingUp size={16} />} label="My sales total" value={money(myTotal)} accent />
+            <Stat icon={<TrendingUp size={16} />} label="My sales (since cash-up)" value={money(myTotal)} accent />
             <button onClick={() => setShowTx(true)}
               style={{ ...S.stat, textAlign: "left", cursor: "pointer", border: `1px solid ${line}`, position: "relative" }}>
               <div style={S.statIcon}><FileText size={16} /></div>
               <div style={S.statLabel}>My transactions</div>
-              <div style={S.statValue}>{mine.length}</div>
+              <div style={S.statValue}>{myCount}</div>
               <span style={{ position: "absolute", right: 12, bottom: 12, fontSize: 11, color: accent, fontWeight: 700 }}>View ›</span>
             </button>
           </div>
@@ -604,7 +636,12 @@ function Seller({ user, onExit, businessName }) {
       {receipt && <ReceiptModal receipt={receipt} onClose={() => setReceipt(null)} />}
       {closingDay && (
         <CloseDayModal sales={mine} user={user} onClose={() => setClosingDay(false)}
-          onSubmitted={() => { setClosingDay(false); setToast("Day report sent to admin"); setTimeout(() => setToast(""), 2200); }} />
+          onSubmitted={() => {
+            const now = new Date().toISOString();
+            store.set(cacheKey(user.business_id, `cashup:${user.name}`), now);
+            setLastCashup(now);
+            setClosingDay(false); setToast("Day report sent to admin — totals reset"); setTimeout(() => setToast(""), 2400);
+          }} />
       )}
       {toast && <div style={S.toast}>{toast}</div>}
     </div>
@@ -1503,7 +1540,7 @@ function EditInvoiceModal({ invoice, products, onClose, onChange }) {
       <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
         <select style={{ ...S.input, flex: 1 }} value={addId} onChange={(e) => setAddId(e.target.value)}>
           <option value="">Add a product…</option>
-          {products.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+          {[...products].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" })).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
         <button style={{ ...S.btn, ...S.btnGhost }} onClick={addLine}><Plus size={16} /></button>
       </div>
@@ -1702,6 +1739,127 @@ function Customers({ sales }) {
                 {copied === c.name ? "✓" : "Copy"}
               </button>
             )}
+          </div>
+        ))}
+      </div>
+    </>
+  );
+}
+
+// Admin comparisons: two periods side by side + week-by-week trend
+function Compare({ sales }) {
+  const today = localDateStr(new Date());
+  const weekAgo = localDateStr(new Date(Date.now() - 6 * 86400000));
+  const twoWeek = localDateStr(new Date(Date.now() - 13 * 86400000));
+  const eightDays = localDateStr(new Date(Date.now() - 7 * 86400000));
+
+  const [aFrom, setAFrom] = useState(weekAgo);
+  const [aTo, setATo] = useState(today);
+  const [bFrom, setBFrom] = useState(twoWeek);
+  const [bTo, setBTo] = useState(eightDays);
+
+  const stats = (from, to) => {
+    const rows = sales.filter((s) => {
+      const d = localDateStr(new Date(s.sold_at));
+      return d >= from && d <= to;
+    });
+    const total = rows.reduce((a, s) => a + Number(s.total), 0);
+    const god = rows.reduce((a, s) => a + Number(s.tithe), 0);
+    const invoices = new Set(rows.map((s) => s.invoice_no || s.id));
+    const customers = new Set(rows.map((s) => (s.customer_name || "").trim().toLowerCase()).filter(Boolean));
+    return { total, god, tx: invoices.size, customers: customers.size, rows };
+  };
+
+  const A = stats(aFrom, aTo);
+  const B = stats(bFrom, bTo);
+
+  const Row = ({ label, a, b, fmt }) => {
+    const diff = a - b;
+    const up = diff > 0, down = diff < 0;
+    return (
+      <div style={{ display: "flex", alignItems: "center", padding: "10px 0", borderBottom: `1px solid ${line}` }}>
+        <div style={{ flex: 1, fontWeight: 600 }}>{label}</div>
+        <div style={{ width: 90, textAlign: "right", fontWeight: 800, color: accent }}>{fmt(a)}</div>
+        <div style={{ width: 90, textAlign: "right", fontWeight: 800, color: "#8A8475" }}>{fmt(b)}</div>
+        <div style={{ width: 70, textAlign: "right", fontSize: 12, fontWeight: 700, color: up ? "#1F9D55" : down ? "#C0392B" : "#8A8475" }}>
+          {up ? "▲" : down ? "▼" : ""}{fmt(Math.abs(diff))}
+        </div>
+      </div>
+    );
+  };
+
+  // per-customer activity for Period A
+  const custMap = {};
+  A.rows.forEach((s) => {
+    const n = (s.customer_name || "").trim();
+    if (!n) return;
+    if (!custMap[n]) custMap[n] = { name: n, total: 0, count: 0 };
+    custMap[n].total += Number(s.total); custMap[n].count += 1;
+  });
+  const topCustomers = Object.values(custMap).sort((a, b) => b.total - a.total).slice(0, 10);
+
+  // week-by-week trend (last 6 weeks)
+  const weeks = [];
+  for (let i = 5; i >= 0; i--) {
+    const end = new Date(Date.now() - i * 7 * 86400000);
+    const start = new Date(end.getTime() - 6 * 86400000);
+    const st = stats(localDateStr(start), localDateStr(end));
+    weeks.push({ label: `${localDateStr(start).slice(5)}–${localDateStr(end).slice(5)}`, total: st.total, god: st.god, tx: st.tx });
+  }
+  const maxWeek = Math.max(...weeks.map((w) => w.total), 1);
+
+  return (
+    <>
+      <SectionTitle>Compare two periods</SectionTitle>
+      <div style={{ display: "flex", gap: 8, marginBottom: 6 }}>
+        <div style={{ flex: 1 }}>
+          <div style={{ ...S.fieldLabel, color: accent }}>Period A</div>
+          <input style={{ ...S.input, marginBottom: 4 }} type="date" value={aFrom} onChange={(e) => setAFrom(e.target.value)} />
+          <input style={S.input} type="date" value={aTo} onChange={(e) => setATo(e.target.value)} />
+        </div>
+        <div style={{ flex: 1 }}>
+          <div style={{ ...S.fieldLabel, color: "#8A8475" }}>Period B</div>
+          <input style={{ ...S.input, marginBottom: 4 }} type="date" value={bFrom} onChange={(e) => setBFrom(e.target.value)} />
+          <input style={S.input} type="date" value={bTo} onChange={(e) => setBTo(e.target.value)} />
+        </div>
+      </div>
+
+      <div style={{ ...S.card, flexDirection: "column", alignItems: "stretch" }}>
+        <div style={{ display: "flex", fontSize: 11, color: "#8A8475", fontWeight: 700, textTransform: "uppercase" }}>
+          <div style={{ flex: 1 }}></div>
+          <div style={{ width: 90, textAlign: "right" }}>A</div>
+          <div style={{ width: 90, textAlign: "right" }}>B</div>
+          <div style={{ width: 70, textAlign: "right" }}>Diff</div>
+        </div>
+        <Row label="Total sales" a={A.total} b={B.total} fmt={money} />
+        <Row label="To God" a={A.god} b={B.god} fmt={money} />
+        <Row label="Transactions" a={A.tx} b={B.tx} fmt={(n) => String(Math.round(n))} />
+        <Row label="Customers" a={A.customers} b={B.customers} fmt={(n) => String(Math.round(n))} />
+      </div>
+
+      <SectionTitle>Week-by-week (last 6 weeks)</SectionTitle>
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        {weeks.map((w, i) => (
+          <div key={i} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <div style={{ width: 96, fontSize: 11, color: "#6B6555" }}>{w.label}</div>
+            <div style={{ flex: 1, background: "#EFEADD", borderRadius: 6, height: 22, position: "relative", overflow: "hidden" }}>
+              <div style={{ width: `${(w.total / maxWeek) * 100}%`, background: `linear-gradient(90deg,${accent},${lime})`, height: "100%", borderRadius: 6 }} />
+            </div>
+            <div style={{ width: 70, textAlign: "right", fontWeight: 800, fontSize: 13 }}>{money(w.total)}</div>
+          </div>
+        ))}
+      </div>
+
+      <SectionTitle>Top customers (Period A)</SectionTitle>
+      {topCustomers.length === 0 && <p style={S.empty}>No named customers in Period A.</p>}
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        {topCustomers.map((c) => (
+          <div key={c.name} style={S.saleRow}>
+            <div style={{ flex: 1 }}>
+              <div style={S.saleName}>{c.name}</div>
+              <div style={S.cardMeta}>{c.count} purchase{c.count === 1 ? "" : "s"}</div>
+            </div>
+            <div style={S.saleName}>{money(c.total)}</div>
           </div>
         ))}
       </div>
@@ -2004,75 +2162,4 @@ const S = {
   lowTag: { fontSize: 10, background: "#FFE2E2", color: "#C0392B", padding: "2px 7px", borderRadius: 20, fontWeight: 700, marginLeft: 6, verticalAlign: "middle" },
   outTag: { fontSize: 10, background: "#C0392B", color: "#fff", padding: "2px 8px", borderRadius: 20, fontWeight: 700, marginLeft: 6, verticalAlign: "middle" },
   invTag: { fontSize: 10, background: "#EAF7EE", color: accent, padding: "2px 8px", borderRadius: 20, fontWeight: 700, marginLeft: 6, verticalAlign: "middle", fontFamily: "monospace" },
-  sugBox: { position: "absolute", top: "100%", left: 0, right: 0, background: "#fff", border: `1px solid ${line}`, borderRadius: 10, boxShadow: "0 8px 20px rgba(0,0,0,0.12)", zIndex: 30, overflow: "hidden", marginTop: 2 },
-  sugItem: { display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%", padding: "10px 13px", border: "none", borderBottom: `1px solid ${line}`, background: "#fff", cursor: "pointer", textAlign: "left" },
-  miniStat: { flex: 1, background: "#F6FBF2", borderRadius: 10, padding: "8px 10px", textAlign: "center" },
-  miniLabel: { fontSize: 10.5, color: "#8A8475", textTransform: "uppercase", letterSpacing: "0.04em" },
-  miniVal: { fontSize: 15, fontWeight: 800, marginTop: 2 },
-
-  qtyCtrl: { display: "flex", alignItems: "center", gap: 8 },
-  qtyCol: { display: "flex", flexDirection: "column", gap: 6 },
-  qtyTiny: { minWidth: 30, textAlign: "center", fontSize: 11, color: "#8A8475", fontWeight: 600 },
-  qtyBtn: { width: 30, height: 30, borderRadius: 9, border: `1px solid ${line}`, background: "#F6FBF2", display: "grid", placeItems: "center", cursor: "pointer", color: accent },
-  qtyNum: { minWidth: 28, textAlign: "center", fontWeight: 800, fontSize: 16 },
-  delBtn: { background: "transparent", border: "none", color: "#C0392B", cursor: "pointer", padding: 4, display: "grid", placeItems: "center" },
-  editBtn: { background: "transparent", border: "none", color: accent, cursor: "pointer", padding: 4, display: "grid", placeItems: "center" },
-
-  sellBtn: { background: `linear-gradient(135deg,${accent},${lime})`, color: "#fff", border: "none", padding: "10px 18px", borderRadius: 12, fontWeight: 800, fontSize: 14, cursor: "pointer", boxShadow: "0 4px 12px rgba(31,157,85,0.3)" },
-  sellBtnOff: { background: "#D9D3C4", color: "#fff", cursor: "not-allowed", boxShadow: "none" },
-
-  saleRow: { display: "flex", alignItems: "center", gap: 12, padding: "10px 14px", background: "#fff", border: `1px solid ${line}`, borderRadius: 13 },
-  saleName: { fontSize: 14, fontWeight: 700 },
-  saleQty: { color: "#8A8475", fontWeight: 500 },
-  titheTag: { fontSize: 11.5, color: accent, fontWeight: 600, marginTop: 1 },
-
-  reportHead: { display: "flex", alignItems: "center", gap: 12, background: `linear-gradient(135deg,${grape},${berry})`, color: "#fff", padding: "16px 18px", borderRadius: 16, marginBottom: 14, boxShadow: "0 8px 22px rgba(124,92,214,0.3)" },
-
-  btn: { display: "flex", alignItems: "center", justifyContent: "center", gap: 8, border: "none", padding: "14px 16px", borderRadius: 14, fontSize: 14.5, fontWeight: 800, cursor: "pointer" },
-  btnDark: { background: `linear-gradient(135deg,${accent},${lime})`, color: "#fff", boxShadow: "0 6px 16px rgba(31,157,85,0.3)" },
-  btnGhost: { background: "#fff", color: ink, border: `1px solid ${line}` },
-  btnWarn: { background: `linear-gradient(135deg,${mango},#E8820C)`, color: "#fff", boxShadow: "0 6px 16px rgba(245,166,35,0.35)" },
-
-  fieldWrap: { display: "block", marginBottom: 12, textAlign: "left" },
-  fieldLabel: { display: "block", fontSize: 12.5, fontWeight: 600, color: "#6B6B5E", marginBottom: 6 },
-  input: { width: "100%", boxSizing: "border-box", padding: "11px 13px", borderRadius: 10, border: `1px solid ${line}`, fontSize: 15, background: "#fff", color: ink, outline: "none" },
-
-  overlay: { position: "fixed", inset: 0, background: "rgba(31,36,33,0.45)", display: "grid", placeItems: "end center", zIndex: 50 },
-  modal: { background: paper, width: "100%", maxWidth: 520, borderRadius: "20px 20px 0 0", padding: "20px 20px 30px", maxHeight: "88vh", overflowY: "auto" },
-  modalHead: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 },
-  modalTitle: { fontSize: 19, fontWeight: 800 },
-
-  toast: { position: "fixed", bottom: 24, left: "50%", transform: "translateX(-50%)", background: ink, color: "#fff", padding: "11px 20px", borderRadius: 12, fontSize: 14, fontWeight: 600, zIndex: 60 },
-
-  searchWrap: { display: "flex", alignItems: "center", gap: 8, background: "#fff", border: `1px solid ${line}`, borderRadius: 11, padding: "9px 13px", marginBottom: 12 },
-  searchInput: { flex: 1, border: "none", outline: "none", background: "transparent", fontSize: 14.5, color: ink },
-  searchClear: { background: "transparent", border: "none", color: "#8A8475", cursor: "pointer", padding: 0, display: "grid", placeItems: "center" },
-  sellSummary: { display: "flex", justifyContent: "space-between", alignItems: "center", background: "#EFE9DC", borderRadius: 10, padding: "11px 14px", fontSize: 14.5, marginTop: 4 },
-
-  cardPop: { animation: "pop 0.25s ease", transition: "transform 0.12s ease, box-shadow 0.12s ease" },
-  cardInCart: { borderColor: accent, boxShadow: "0 0 0 1px #3A7D5C inset" },
-  cartBadge: { fontSize: 10, background: accent, color: "#fff", padding: "2px 8px", borderRadius: 20, fontWeight: 700, marginLeft: 8, verticalAlign: "middle" },
-  cartFab: { position: "fixed", bottom: 22, left: 0, right: 0, marginLeft: "auto", marginRight: "auto", width: "fit-content", display: "flex", alignItems: "center", gap: 4, background: `linear-gradient(135deg,${accent},${lime})`, color: "#fff", border: "none", padding: "14px 24px", borderRadius: 30, fontSize: 15, cursor: "pointer", boxShadow: "0 10px 28px rgba(31,157,85,0.45)", zIndex: 55, animation: "popIn 0.3s ease" },
-  cartFabCount: { background: "#fff", color: accent, borderRadius: "50%", minWidth: 22, height: 22, display: "grid", placeItems: "center", fontSize: 12, fontWeight: 800, marginLeft: 4 },
-  cartLine: { display: "flex", alignItems: "center", gap: 10, background: "#fff", border: `1px solid ${line}`, borderRadius: 11, padding: "10px 13px" },
-  cartTotalRow: { display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 18, fontWeight: 800, padding: "12px 14px", background: "#EFE9DC", borderRadius: 11 },
-  receipt: { background: "#fff", border: `1px solid ${line}`, borderRadius: 14, padding: "18px 16px" },
-  receiptDivider: { borderTop: `1px dashed ${line}`, margin: "10px 0" },
-  receiptLine: { display: "flex", justifyContent: "space-between", fontSize: 14, padding: "3px 0" },
-};
-
-if (typeof document !== "undefined" && !document.getElementById("sf-spin")) {
-  const st = document.createElement("style");
-  st.id = "sf-spin";
-  st.textContent = `
-    @keyframes spin{to{transform:rotate(360deg)}}
-    @keyframes pop{0%{transform:scale(0.97);opacity:0.6}100%{transform:scale(1);opacity:1}}
-    @keyframes rise{0%{transform:translateY(14px);opacity:0}100%{transform:translateY(0);opacity:1}}
-    @keyframes popIn{0%{transform:scale(0.9);opacity:0}100%{transform:scale(1);opacity:1}}
-    @keyframes bob{0%,100%{transform:translateY(0)}50%{transform:translateY(-6px)}}
-    button{transition:transform 0.08s ease, filter 0.12s ease}
-    button:active{transform:scale(0.95)}
-    button:hover{filter:brightness(1.05)}
-  `;
-  document.head.appendChild(st);
-}
+  sugBox: { position: "absolute", top: "100%", left: 0, right: 0, background: "#
