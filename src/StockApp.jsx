@@ -74,6 +74,21 @@ const sb = {
     });
     if (!r.ok) throw new Error("Delete failed");
   },
+  // Upload a file to the 'receipts' storage bucket, return its public URL
+  async uploadReceipt(file) {
+    const ext = (file.name && file.name.split(".").pop()) || "jpg";
+    const path = `receipt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+    const r = await fetch(`${SUPABASE_URL}/storage/v1/object/receipts/${path}`, {
+      method: "POST",
+      headers: {
+        apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+        "Content-Type": file.type || "image/jpeg",
+      },
+      body: file,
+    });
+    if (!r.ok) throw new Error("Photo upload failed");
+    return `${SUPABASE_URL}/storage/v1/object/public/receipts/${path}`;
+  },
 };
 
 // ============================================================
@@ -901,12 +916,16 @@ function CloseDayModal({ sales, user, onClose, onSubmitted }) {
   const [cash, setCash] = useState("");
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
+  const [expenses, setExpenses] = useState([]); // {amount, note, photo_url}
+  const [addingExp, setAddingExp] = useState(false);
 
   const dayInvoices = groupByInvoice(sales.filter((s) => localDateStr(new Date(s.sold_at)) === day));
   const salesTotal = dayInvoices.reduce((a, inv) => a + inv.total, 0);
+  const expensesTotal = expenses.reduce((a, e) => a + Number(e.amount || 0), 0);
+  const expectedCash = salesTotal - expensesTotal;
   const cashNum = parseFloat(cash);
   const hasCash = cash !== "" && !isNaN(cashNum);
-  const diff = hasCash ? cashNum - salesTotal : 0;
+  const diff = hasCash ? cashNum - expectedCash : 0;
 
   const submit = async () => {
     setBusy(true);
@@ -919,6 +938,8 @@ function CloseDayModal({ sales, user, onClose, onSubmitted }) {
         cash_in_hand: hasCash ? cashNum : 0,
         tx_count: dayInvoices.length,
         note: note.trim() || null,
+        expenses: expenses,
+        expenses_total: expensesTotal,
         confirmed: false,
       });
       onSubmitted();
@@ -937,11 +958,36 @@ function CloseDayModal({ sales, user, onClose, onSubmitted }) {
         <span>{money(salesTotal)}</span>
       </div>
 
+      <SectionTitle>Money spent (raw materials etc.)</SectionTitle>
+      <p style={S.hint}>Add anything you paid for out of the cash, with a photo of the receipt.</p>
+      {expenses.map((e, i) => (
+        <div key={i} style={{ ...S.cartLine, marginBottom: 6 }}>
+          <div style={{ flex: 1 }}>
+            <div style={S.cardName}>{money(e.amount)}</div>
+            <div style={S.cardMeta}>{e.note || "expense"}{e.photo_url ? " · 📎 receipt" : ""}</div>
+          </div>
+          <button style={S.delBtn} onClick={() => setExpenses((prev) => prev.filter((_, j) => j !== i))}><X size={16} /></button>
+        </div>
+      ))}
+      <button style={{ ...S.btn, ...S.btnGhost, width: "100%", marginBottom: 6 }} onClick={() => setAddingExp(true)}>
+        <Plus size={17} /> Add an expense
+      </button>
+      {expensesTotal > 0 && (
+        <div style={{ ...S.cartTotalRow, background: "#FFF1DA" }}>
+          <span>Total spent</span><span>− {money(expensesTotal)}</span>
+        </div>
+      )}
+
+      <SectionTitle>Cash</SectionTitle>
+      <div style={S.cartTotalRow}>
+        <span>Expected cash (sales − spent)</span>
+        <span>{money(expectedCash)}</span>
+      </div>
       <Field label="Actual cash in hand ($)" value={cash} onChange={setCash} type="number" placeholder="0.00" />
       {hasCash && (
-        <div style={{ ...S.cartTotalRow, background: diff === 0 ? "#EAF7EE" : Math.abs(diff) < 0.005 ? "#EAF7EE" : "#FFF1DA", color: diff < -0.005 ? "#C0392B" : accent }}>
+        <div style={{ ...S.cartTotalRow, background: Math.abs(diff) < 0.005 ? "#EAF7EE" : "#FFF1DA", color: diff < -0.005 ? "#C0392B" : accent }}>
           <span>{diff < -0.005 ? "Short by" : diff > 0.005 ? "Over by" : "Matches exactly"}</span>
-          <span>{diff === 0 ? "✓" : money(Math.abs(diff))}</span>
+          <span>{Math.abs(diff) < 0.005 ? "✓" : money(Math.abs(diff))}</span>
         </div>
       )}
       <Field label="Note for admin (optional)" value={note} onChange={setNote} placeholder="e.g. gave 2 on credit" />
@@ -963,12 +1009,93 @@ function CloseDayModal({ sales, user, onClose, onSubmitted }) {
       <button style={{ ...S.btn, ...S.btnDark, width: "100%" }} disabled={busy || dayInvoices.length === 0} onClick={submit}>
         <Check size={18} /> {busy ? "Submitting…" : "Submit to admin"}
       </button>
+
+      {addingExp && (
+        <AddExpenseModal onClose={() => setAddingExp(false)}
+          onAdd={(exp) => { setExpenses((prev) => [...prev, exp]); setAddingExp(false); }} />
+      )}
+    </Modal>
+  );
+}
+
+// Add one expense: photo (optional) → OCR suggests amount → user confirms
+function AddExpenseModal({ onClose, onAdd }) {
+  const [amount, setAmount] = useState("");
+  const [note, setNote] = useState("");
+  const [photoUrl, setPhotoUrl] = useState("");
+  const [reading, setReading] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [suggested, setSuggested] = useState(null);
+
+  const onPhoto = async (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    // Upload for the admin to see
+    setUploading(true);
+    try { const url = await sb.uploadReceipt(file); setPhotoUrl(url); }
+    catch (err) { alert(err.message); }
+    setUploading(false);
+    // Try to read the amount (suggestion only)
+    setReading(true);
+    try {
+      const guess = await readAmountFromImage(file);
+      if (guess != null) { setSuggested(guess); if (!amount) setAmount(String(guess)); }
+    } catch {}
+    setReading(false);
+  };
+
+  return (
+    <Modal onClose={onClose} title="Add expense">
+      <label style={{ ...S.btn, ...S.btnGhost, width: "100%", marginBottom: 10, cursor: "pointer" }}>
+        📷 {uploading ? "Uploading…" : "Photo of receipt"}
+        <input type="file" accept="image/*" capture="environment" style={{ display: "none" }} onChange={onPhoto} />
+      </label>
+      {photoUrl && <img src={photoUrl} alt="receipt" style={{ width: "100%", borderRadius: 10, marginBottom: 10, maxHeight: 200, objectFit: "cover" }} />}
+      {reading && <p style={{ ...S.hint, color: accent }}>Reading the receipt…</p>}
+      {suggested != null && <p style={S.hint}>Suggested amount from photo: <b>{money(suggested)}</b> — please check it matches the receipt.</p>}
+
+      <Field label="Amount spent ($)" value={amount} onChange={setAmount} type="number" placeholder="0.00" />
+      <Field label="What was it for?" value={note} onChange={setNote} placeholder="e.g. sugar, packaging" />
+      <button style={{ ...S.btn, ...S.btnDark, width: "100%", marginTop: 4 }}
+        disabled={!amount || isNaN(parseFloat(amount))}
+        onClick={() => onAdd({ amount: parseFloat(amount), note: note.trim(), photo_url: photoUrl })}>
+        <Check size={18} /> Add expense
+      </button>
     </Modal>
   );
 }
 
 function localDateStr(d) {
   return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+}
+
+// Load Tesseract.js (OCR) from CDN once, on demand
+let _tesseractPromise = null;
+function loadTesseract() {
+  if (_tesseractPromise) return _tesseractPromise;
+  _tesseractPromise = new Promise((resolve, reject) => {
+    if (window.Tesseract) return resolve(window.Tesseract);
+    const s = document.createElement("script");
+    s.src = "https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js";
+    s.onload = () => resolve(window.Tesseract);
+    s.onerror = () => reject(new Error("Could not load the receipt reader."));
+    document.head.appendChild(s);
+  });
+  return _tesseractPromise;
+}
+
+// Read a receipt image and guess the total amount (largest money-like number).
+// Always returned as a SUGGESTION for the user to confirm — never trusted blindly.
+async function readAmountFromImage(file) {
+  const Tesseract = await loadTesseract();
+  const { data } = await Tesseract.recognize(file, "eng");
+  const text = (data && data.text) || "";
+  // Find money-like numbers, e.g. 12.50, 1,250.00, $9.99
+  const matches = text.match(/\d[\d,]*\.\d{2}/g) || [];
+  const nums = matches.map((m) => parseFloat(m.replace(/,/g, ""))).filter((n) => !isNaN(n));
+  if (nums.length === 0) return null;
+  // Heuristic: the total is usually the largest amount on the receipt
+  return Math.max(...nums);
 }
 
 // ============================================================
@@ -1432,8 +1559,11 @@ function CashUps({ businessId }) {
       {reports.length === 0 && <p style={S.empty}>No cash-ups submitted yet.</p>}
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {reports.map((r) => {
-          const diff = Number(r.cash_in_hand) - Number(r.sales_total);
+          const expTotal = Number(r.expenses_total || 0);
+          const expected = Number(r.sales_total) - expTotal;
+          const diff = Number(r.cash_in_hand) - expected;
           const short = diff < -0.005, over = diff > 0.005;
+          const expList = Array.isArray(r.expenses) ? r.expenses : [];
           return (
             <div key={r.id} style={{ ...S.card, flexDirection: "column", alignItems: "stretch", gap: 8 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -1451,12 +1581,21 @@ function CashUps({ businessId }) {
               </div>
               <div style={{ display: "flex", gap: 8 }}>
                 <div style={{ ...S.miniStat }}><div style={S.miniLabel}>Sales</div><div style={S.miniVal}>{money(r.sales_total)}</div></div>
+                <div style={{ ...S.miniStat }}><div style={S.miniLabel}>Spent</div><div style={S.miniVal}>{money(expTotal)}</div></div>
                 <div style={{ ...S.miniStat }}><div style={S.miniLabel}>Cash</div><div style={S.miniVal}>{money(r.cash_in_hand)}</div></div>
                 <div style={{ ...S.miniStat, background: short ? "#FFE2E2" : over ? "#FFF1DA" : "#EAF7EE" }}>
                   <div style={S.miniLabel}>{short ? "Short" : over ? "Over" : "Match"}</div>
-                  <div style={{ ...S.miniVal, color: short ? "#C0392B" : accent }}>{diff === 0 ? "✓" : money(Math.abs(diff))}</div>
+                  <div style={{ ...S.miniVal, color: short ? "#C0392B" : accent }}>{Math.abs(diff) < 0.005 ? "✓" : money(Math.abs(diff))}</div>
                 </div>
               </div>
+              {expList.length > 0 && (
+                <div style={{ ...S.cardMeta }}>
+                  Expenses:
+                  {expList.map((e, i) => (
+                    <span key={i}> {money(e.amount)} ({e.note || "?"}){e.photo_url ? <a href={e.photo_url} target="_blank" rel="noreferrer" style={{ color: accent, marginLeft: 3 }}>📎</a> : ""}{i < expList.length - 1 ? "," : ""}</span>
+                  ))}
+                </div>
+              )}
               {r.note && <div style={S.cardMeta}>Note: {r.note}</div>}
               {r.confirmed
                 ? <button style={{ ...S.btn, ...S.btnGhost, width: "100%" }} onClick={() => reopen(r.id)}>Re-open (mark pending)</button>
