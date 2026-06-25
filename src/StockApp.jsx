@@ -1224,7 +1224,6 @@ function groupByInvoice(sales) {
 }
 
 function Transactions({ sales, products, businessId, onChange, onDeleteSale }) {
-  const [nameQ, setNameQ] = useState("");
   const [prodQ, setProdQ] = useState("");
   const [fromQ, setFromQ] = useState("");
   const [toQ, setToQ] = useState("");
@@ -1248,10 +1247,6 @@ function Transactions({ sales, products, businessId, onChange, onDeleteSale }) {
   }
 
   let invoices = groupByInvoice(sales);
-  if (nameQ.trim()) {
-    const q = nameQ.trim().toLowerCase();
-    invoices = invoices.filter((inv) => (inv.customer || "").toLowerCase().includes(q));
-  }
   if (prodQ.trim()) {
     const q = prodQ.trim().toLowerCase();
     invoices = invoices.filter((inv) => inv.lines.some((l) => (l.product_name || "").toLowerCase().includes(q)));
@@ -1260,12 +1255,7 @@ function Transactions({ sales, products, businessId, onChange, onDeleteSale }) {
 
   return (
     <>
-      <SectionTitle>Find an invoice</SectionTitle>
-      <div style={S.searchWrap}>
-        <Search size={16} style={{ color: "#8A8475", flexShrink: 0 }} />
-        <input style={S.searchInput} value={nameQ} placeholder="Search customer name…" onChange={(e) => setNameQ(e.target.value)} />
-        {nameQ && <button style={S.searchClear} onClick={() => setNameQ("")}><X size={15} /></button>}
-      </div>
+      <SectionTitle>Find sales by product</SectionTitle>
       <div style={S.searchWrap}>
         <Search size={16} style={{ color: "#8A8475", flexShrink: 0 }} />
         <input style={S.searchInput} value={prodQ} placeholder="Search product (e.g. Cascade)…" onChange={(e) => setProdQ(e.target.value)} />
