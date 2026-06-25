@@ -600,7 +600,7 @@ function Seller({ user, onExit, businessName }) {
 function AddToCartModal({ product, onClose, onAdd }) {
   const [packs, setPacks] = useState("");
   const [warned, setWarned] = useState(false);
-  const totalPacks = parseInt(packs) || 0;
+  const totalPacks = parseFloat(packs) || 0;
   const totalPrice = totalPacks * Number(product.price);
   const oversell = totalPacks > product.qty;
 
@@ -945,7 +945,7 @@ function StockManager({ products, onChange, businessId }) {
     try {
       await sb.insert("products", {
         name: f.name.trim(), price: parseFloat(f.price) || 0,
-        tithe_pct: parseFloat(f.pct) || 0, qty: parseInt(f.packs) || 0,
+        tithe_pct: parseFloat(f.pct) || 0, qty: parseFloat(f.packs) || 0,
         pack_size: parseInt(f.pack_size) || 1, low_at: parseInt(f.low) || 5, business_id: businessId,
       });
       setF({ name: "", price: "", pct: "", packs: "", units: "", pack_size: "1", low: "5" });
@@ -1062,7 +1062,7 @@ function BulkAddModal({ businessId, onClose, onDone }) {
         name: it.name,
         price: parseFloat(it.price) || 0,
         tithe_pct: 0,
-        qty: parseInt(it.qty) || 0,
+        qty: parseFloat(it.qty) || 0,
         pack_size: parseInt(it.pack_size) || 1,
         low_at: 5,
         business_id: businessId,
@@ -1252,7 +1252,7 @@ function EditInvoiceModal({ invoice, products, onClose, onChange }) {
   const [addId, setAddId] = useState("");
   const [busy, setBusy] = useState(false);
 
-  const setPacks = (i, v) => setLines((prev) => prev.map((l, j) => j === i ? { ...l, packs: parseInt(v) || 0 } : l));
+  const setPacks = (i, v) => setLines((prev) => prev.map((l, j) => j === i ? { ...l, packs: parseFloat(v) || 0 } : l));
   const removeLine = (i) => setLines((prev) => prev.filter((_, j) => j !== i));
   const addLine = () => {
     const p = products.find((x) => x.id === addId);
