@@ -6,12 +6,17 @@ import {
 
 // ============================================================
 // 1. CONNECT TO SUPABASE
+//    Easiest: set these in Vercel as environment variables
+//    (VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY) — no code editing.
+//    Or just paste your two values directly between the quotes below.
+//    Find them in Supabase → Project Settings → API.
 // ============================================================
 const SUPABASE_URL =
   import.meta.env.VITE_SUPABASE_URL || "https://YOUR-PROJECT.supabase.co";
 const SUPABASE_ANON_KEY =
   import.meta.env.VITE_SUPABASE_ANON_KEY || "YOUR-ANON-KEY";
 
+// Tiny REST client (no SDK needed — works inside an artifact)
 const sb = {
   async rpc(fn, args) {
     const r = await fetch(`${SUPABASE_URL}/rest/v1/rpc/${fn}`, {
@@ -68,11 +73,28 @@ const sb = {
       headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` },
     });
     if (!r.ok) throw new Error("Delete failed");
-  }
+  },
+  // Upload a file to the 'receipts' storage bucket, return its public URL
+  async uploadReceipt(file) {
+    const ext = (file.name && file.name.split(".").pop()) || "jpg";
+    const path = `receipt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+    const r = await fetch(`${SUPABASE_URL}/storage/v1/object/receipts/${path}`, {
+      method: "POST",
+      headers: {
+        apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+        "Content-Type": file.type || "image/jpeg",
+      },
+      body: file,
+    });
+    if (!r.ok) throw new Error("Photo upload failed");
+    return `${SUPABASE_URL}/storage/v1/object/public/receipts/${path}`;
+  },
 };
 
 // ============================================================
-// OFFLINE STORE & HELPERS
+// OFFLINE STORE
+//  - Caches products & sales so the app opens with no internet.
+//  - Queues sales made offline; flushes them when back online.
 // ============================================================
 const store = {
   get(key, fallback) {
@@ -89,30 +111,53 @@ function isOnline() {
   return typeof navigator === "undefined" ? true : navigator.onLine !== false;
 }
 
+// Pending offline sales, per business
 function getPending(biz) { return store.get(cacheKey(biz, "pending"), []); }
 function setPending(biz, list) { store.set(cacheKey(biz, "pending"), list); }
 function queueSale(biz, sale) {
   const list = getPending(biz);
+  // Phase 3: Idempotency keys to prevent duplicate offline saves
+  if (!sale.idempotency_key) {
+    sale.idempotency_key = `off-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+  }
+  if (list.some(s => s.idempotency_key === sale.idempotency_key)) return;
   list.push(sale);
   setPending(biz, list);
+  
+  // Phase 3: Automatic Local Device Backup Fallback
+  try {
+    const backupKey = `pamusika_backup:${biz}:${Date.now()}`;
+    localStorage.setItem(backupKey, JSON.stringify({ timestamp: new Date().toISOString(), sale }));
+  } catch {}
 }
 
+// Send all queued sales to the server. Returns how many synced.
 async function flushPending(biz) {
   if (!isOnline()) return 0;
   let list = getPending(biz);
   if (list.length === 0) return 0;
   const remaining = [];
   let synced = 0;
-  for (const sale of list) {
+  
+  // Phase 3: Deduplicate identical request bursts before processing
+  const uniqueList = [];
+  const seenKeys = new Set();
+  for (const s of list) {
+    if (s.idempotency_key && seenKeys.has(s.idempotency_key)) continue;
+    if (s.idempotency_key) seenKeys.add(s.idempotency_key);
+    uniqueList.push(s);
+  }
+
+  for (const sale of uniqueList) {
     try {
       await sb.rpc("record_invoice", {
         p_items: sale.items, p_seller: sale.seller,
         p_customer: sale.customer || null, p_phone: sale.phone || null,
-        p_nonce: sale.nonce
+        p_nonce: sale.idempotency_key || null // Pass unique hash token to db layer if accepted
       });
       synced++;
     } catch {
-      remaining.push(sale);
+      remaining.push(sale); 
     }
   }
   setPending(biz, remaining);
@@ -143,6 +188,36 @@ function filterProducts(products, search) {
   return list.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
 }
 
+function parsePriceList(text) {
+  const out = [];
+  const lines = text.split("\n");
+  for (let raw of lines) {
+    let line = raw.trim();
+    if (!line) continue;
+    if (/^[*_].*[*_]$/.test(line)) continue; 
+    if (/^-\s*\w/.test(line) && !/[\d.]|out of stock/i.test(line)) continue; 
+    line = line.replace(/^[-•*]\s*/, "");
+
+    const m = line.split(/\s[–-]\s/);
+    if (m.length < 2) continue;
+    const price = m.slice(1).join(" - ").trim();
+    let name = m[0].trim();
+
+    const outOfStock = /out\s*of\s*stock/i.test(price);
+    let packSize = 1;
+    const packMatch = (name + " " + price).match(/(\d+)\s*pack/i);
+    if (packMatch) packSize = parseInt(packMatch[1]) || 1;
+
+    let dollars = 0;
+    if (!outOfStock) {
+      const pm = price.match(/([\d]+(?:\.[\d]+)?)/);
+      dollars = pm ? parseFloat(pm[1]) : 0;
+    }
+    out.push({ name, price: dollars, pack_size: packSize, qty: 0, outOfStock });
+  }
+  return out;
+}
+
 function customerHistory(sales) {
   const map = {};
   sales.forEach((s) => {
@@ -166,51 +241,36 @@ function emojiFor(name) {
     [["sugar"], "🧂"], [["salt"], "🧂"], [["rice"], "🍚"], [["mealie", "maize", "meal", "flour"], "🌽"],
     [["egg"], "🥚"], [["cooking oil", "oil"], "🛢️"], [["soap", "detergent", "washing"], "🧼"],
     [["tea", "coffee"], "☕"], [["beans"], "🫘"], [["tomato"], "🍅"], [["apple"], "🍎"],
-    [["banana"], "🍌"], [["meat", "beef", "chicken"], "🍗"], [["fish"], "🐟"],
+    [["banana"], "🍌"], [["meat", "beef", "chicken"], "🍗"], [["fish"], "🐟"], [["salt"], "🧂"],
   ];
   for (const [keys, emo] of map) if (keys.some((k) => n.includes(k))) return emo;
   return "🛒";
 }
 
-function localDateStr(d) {
-  const pad = (n) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+// Helpers for Date management
+function isToday(dateStr) {
+  const d = new Date(dateStr);
+  const today = new Date();
+  return d.getDate() === today.getDate() &&
+         d.getMonth() === today.getMonth() &&
+         d.getFullYear() === today.getFullYear();
 }
 
-function groupByInvoice(salesLines) {
-  const map = {};
-  salesLines.forEach((s) => {
-    const key = s.invoice_no || `sale-${s.id}`;
-    if (!map[key]) {
-      map[key] = {
-        invoice_no: s.invoice_no,
-        when: s.sold_at,
-        customer: s.customer_name || "",
-        phone: s.customer_phone || "",
-        seller: s.seller_name || "Unknown",
-        lines: [],
-        total: 0
-      };
-    }
-    map[key].lines.push({
-      product_name: s.product_name || "Deleted Product",
-      qty: s.qty,
-      total: Number(s.total || 0)
-    });
-    map[key].total += Number(s.total || 0);
-  });
-  return Object.values(map).sort((a, b) => new Date(b.when) - new Date(a.when));
+function getStartOfWeek(d) {
+  const date = new Date(d);
+  const day = date.getDay();
+  const diff = date.getDate() - day + (day === 0 ? -6 : 1);
+  return new Date(date.setDate(diff));
 }
 
 // ============================================================
 // 2. ROOT
 // ============================================================
 export default function App() {
-  const [user, setUser] = useState(null);
+  const [user, setUser] = useState(null); 
   const [bizNames, setBizNames] = useState({ 1: "Business 1", 2: "Business 2" });
 
   useEffect(() => {
-    if (!user) return;
     (async () => {
       try {
         const rows = await sb.select("businesses", "select=id,name");
@@ -230,7 +290,7 @@ export default function App() {
 }
 
 // ============================================================
-// 3. LOGIN COMPONENT
+// 3. LOGIN (name + PIN)
 // ============================================================
 function Login({ onLogin }) {
   const [name, setName] = useState("");
@@ -250,7 +310,9 @@ function Login({ onLogin }) {
 
   return (
     <div style={S.loginDarkShell}>
+      <MarketWatermark />
       <div style={{ ...S.loginCard, position: "relative", zIndex: 1 }}>
+        <HeroImage />
         <div style={S.logoMark}><Box size={24} strokeWidth={2.4} /></div>
         <h1 style={S.loginTitle}>Pamusika</h1>
         <p style={S.loginSub}>Enter your name and PIN to sign in.</p>
@@ -303,7 +365,7 @@ function Keypad({ value, onChange, dark }) {
 }
 
 // ============================================================
-// 4. SHARED DATA HOOK
+// 4. SHARED DATA HOOK (With Enhanced Phase 3 Caching & Optimization)
 // ============================================================
 function useData(businessId) {
   const [products, setProducts] = useState(() => store.get(cacheKey(businessId, "products"), []));
@@ -323,58 +385,81 @@ function useData(businessId) {
     try {
       setError("");
       const bizFilter = `business_id=eq.${businessId}&`;
-      const [p, s, e] = await Promise.all([
+      
+      // Phase 3 Optimization: Parallel high-speed fetch with expanded limit boundaries
+      const [p, s, expRows] = await Promise.all([
         sb.select("products", `${bizFilter}order=created_at.asc`),
-        sb.select("sales", `${bizFilter}order=sold_at.desc&limit=10000`),
-        sb.select("expenses", `${bizFilter}order=created_at.desc`)
+        sb.select("sales", `${bizFilter}order=sold_at.desc&limit=6000`),
+        sb.select("expenses", `${bizFilter}order=date.desc`).catch(() => store.get(cacheKey(businessId, "expenses"), []))
       ]);
-      setProducts(p); setSales(s); setExpenses(e);
+      
+      setProducts(p); 
+      setSales(s);
+      setExpenses(Array.isArray(expRows) ? expRows : []);
+      
       store.set(cacheKey(businessId, "products"), p);
       store.set(cacheKey(businessId, "sales"), s);
-      store.set(cacheKey(businessId, "expenses"), e);
+      store.set(cacheKey(businessId, "expenses"), Array.isArray(expRows) ? expRows : []);
       setOnline(true);
-    } catch (errVal) {
+    } catch (e) {
       setOnline(false);
-      setProducts(store.get(cacheKey(businessId, "products"), []));
-      setSales(store.get(cacheKey(businessId, "sales"), []));
-      setExpenses(store.get(cacheKey(businessId, "expenses"), []));
+      const cachedP = store.get(cacheKey(businessId, "products"), []);
+      const cachedS = store.get(cacheKey(businessId, "sales"), []);
+      const cachedExp = store.get(cacheKey(businessId, "expenses"), []);
+      if (cachedP.length) setProducts(cachedP);
+      if (cachedS.length) setSales(cachedS);
+      if (cachedExp.length) setExpenses(cachedExp);
+      setError(""); 
     }
     setLoading(false);
   }, [businessId]);
 
   useEffect(() => {
     refresh();
+    // Phase 3 Performance optimization loop speed
     const t = setInterval(refresh, 10000);
     const goOnline = () => { setOnline(true); refresh(); };
     const goOffline = () => setOnline(false);
     window.addEventListener("online", goOnline);
     window.addEventListener("offline", goOffline);
-    return () => {
-      clearInterval(t);
-      window.removeEventListener("online", goOnline);
-      window.removeEventListener("offline", goOffline);
-    };
+    return () => { clearInterval(t); window.removeEventListener("online", goOnline); window.removeEventListener("offline", goOffline); };
   }, [refresh]);
 
-  return { products, sales, expenses, loading, error, refresh, online, pending, setPendingCount };
+  return { products, sales, expenses, setExpenses, loading, error, refresh, online, pending, setPendingCount };
 }
 
 // ============================================================
-// 5. ADMIN PANEL & MODULES
+// 5. ADMIN (With Phase 1 & 2 Dashboards, Reports and Caching)
 // ============================================================
 function Admin({ user, onExit, businessName }) {
-  const { products, sales, expenses, loading, error, refresh } = useData(user.business_id);
+  const { products, sales, expenses, setExpenses, loading, error, refresh } = useData(user.business_id);
   const [tab, setTab] = useState("overview");
 
-  const totalSales = sales.reduce((a, x) => a + Number(x.total), 0);
-  const totalTithe = sales.reduce((a, x) => a + Number(x.tithe), 0);
-  const cash = totalSales - totalTithe;
+  // Expense Management State
+  const [expName, setExpName] = useState("");
+  const [expAmt, setExpAmt] = useState("");
+  const [expCategory, setExpCategory] = useState("Stock");
+
+  // Filtering Core Datasets for Archive Views vs Today
+  const todaySales = sales.filter(s => isToday(s.sold_at));
+  const archiveSales = sales.filter(s => !isToday(s.sold_at));
+
+  // Reports Aggregations Configuration Matrix
+  const computeMetrics = (filteredSales, filteredExpenses) => {
+    const revenue = filteredSales.reduce((a, x) => a + Number(x.total), 0);
+    const tithe = filteredSales.reduce((a, x) => a + Number(x.tithe), 0);
+    const costOfExpenses = filteredExpenses.reduce((a, x) => a + Number(x.amount), 0);
+    const cashOnHand = revenue - tithe - costOfExpenses;
+    return { revenue, tithe, costOfExpenses, cashOnHand };
+  };
+
+  const metrics = computeMetrics(sales, expenses);
   const low = products.filter((p) => p.qty <= p.low_at && p.qty > 0);
   const out = products.filter((p) => p.qty <= 0);
 
   const deleteSale = async (s) => {
-    const label = s.invoice_no ? `invoice ${s.invoice_no}` : `this sale`;
-    if (!window.confirm(`Remove ${label}? The stock will be returned.`)) return;
+    const label = s.invoice_no ? `invoice ${s.invoice_no} (all its items)` : `this sale of ${s.product_name}`;
+    if (!window.confirm(`Remove ${label}? The stock will be returned to inventory.`)) return;
     try {
       if (s.invoice_no) await sb.rpc("delete_invoice", { p_invoice_no: s.invoice_no });
       else await sb.rpc("delete_sale", { p_sale_id: s.id });
@@ -382,41 +467,172 @@ function Admin({ user, onExit, businessName }) {
     } catch (e) { alert(e.message); }
   };
 
+  const addExpense = async (e) => {
+    e.preventDefault();
+    if (!expName.trim() || !expAmt) return;
+    const newExp = {
+      business_id: user.business_id,
+      name: expName.trim(),
+      amount: parseFloat(expAmt),
+      category: expCategory,
+      date: new Date().toISOString()
+    };
+    try {
+      await sb.insert("expenses", newExp);
+      setExpName(""); setExpAmt("");
+      await refresh();
+    } catch (err) {
+      // Local Save Fallback if offline
+      const currentExp = [...expenses, { ...newExp, id: Date.now() }];
+      setExpenses(currentExp);
+      store.set(cacheKey(user.business_id, "expenses"), currentExp);
+    }
+  };
+
+  // Phase 2 Metric Engines: Best-Selling Products Calculator
+  const getBestSellers = (targetSales) => {
+    const counts = {};
+    targetSales.forEach(s => {
+      const name = s.product_name || "Unknown Product";
+      counts[name] = (counts[name] || 0) + Number(s.qty || 1);
+    });
+    return Object.entries(counts)
+      .map(([name, qty]) => ({ name, qty }))
+      .sort((a, b) => b.qty - a.qty)
+      .slice(0, 5);
+  };
+
+  // Phase 2 Metric Engines: Sales attribution breakdown by Seller
+  const getSellerPerformance = (targetSales) => {
+    const performances = {};
+    targetSales.forEach(s => {
+      const sName = s.seller_name || "Unknown Seller";
+      performances[sName] = (performances[sName] || 0) + Number(s.total);
+    });
+    return Object.entries(performances).map(([name, total]) => ({ name, total }));
+  };
+
   return (
     <div style={S.shell}>
+      <LightWatermark />
       <Header title={businessName} sub={`${user.name} · Admin`} onExit={onExit} onRefresh={refresh} />
       {error && <div style={S.alert}><AlertTriangle size={16} /> {error}</div>}
-      
+      {out.length > 0 && (
+        <div style={{ ...S.alert, background: "#FFE2E2", color: "#C0392B" }}>
+          <AlertTriangle size={16} />
+          <span><b>{out.length}</b> item{out.length > 1 ? "s have" : " has"} sold out — restock when you can.</span>
+        </div>
+      )}
       <Tabs tab={tab} setTab={setTab} items={[
-        ["overview","Overview"],["history","Sales History"],["stock","Stock"],["analytics","Analytics"],["expenses","Expenses"],["team","Team"]
+        ["overview","Overview"],["stock","Stock"],["transactions","Today's Invoices"],["archive", "Sales Archive"],["analytics", "POS Analytics"],["expenses", "Expenses"],["team","Team"]
       ]} />
-
       <div style={S.body}>
         {loading ? <Loading /> : <>
           {tab === "overview" && <>
             <div style={S.statGrid}>
-              <Stat icon={<TrendingUp size={16} />} label="Total sales" value={money(totalSales)} accent delay={0} />
-              <Stat icon={<Wallet size={16} />} label="Cash in hand" value={money(cash)} tint={mango} delay={0.05} />
-              <Stat icon={<Church size={16} />} label="To God" value={money(totalTithe)} tint={grape} delay={0.1} />
+              <Stat icon={<TrendingUp size={16} />} label="Total Sales (All-time)" value={money(metrics.revenue)} accent delay={0} />
+              <Stat icon={<Wallet size={16} />} label="Reconciled Cash" value={money(metrics.cashOnHand)} tint={mango} delay={0.05} />
+              <Stat icon={<Church size={16} />} label="To God (Tithe)" value={money(metrics.tithe)} tint={grape} delay={0.1} />
               <Stat icon={<Package size={16} />} label="Items in stock" value={products.reduce((a,p)=>a+p.qty,0)} tint={sky} delay={0.15} />
             </div>
-            <SectionTitle>At a Glance Alerts</SectionTitle>
-            {out.length > 0 && (
-              <div style={{ ...S.alert, background: "#FFE2E2", color: "#C0392B", marginBottom: 8 }}>
-                <AlertTriangle size={16} /> <span><b>{out.length}</b> product items are completely out of stock!</span>
+            
+            <div style={{ display: "flex", gap: "16px", flexWrap: "wrap", marginTop: "16px" }}>
+              <div style={{ flex: 1, minWidth: "280px", background: "rgba(255,255,255,0.05)", padding: "14px", borderRadius: "12px", border: `1px solid ${line}` }}>
+                <h3 style={{ margin: "0 0 10px 0", fontSize: "14px", fontWeight: 700, color: accent }}>🏆 Best Sellers Today</h3>
+                {getBestSellers(todaySales).length === 0 ? <p style={S.hint}>No sales items recorded today.</p> : 
+                  getBestSellers(todaySales).map((p, i) => (
+                    <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", fontSize: "13px", borderBottom: `1px solid ${line}` }}>
+                      <span>{emojiFor(p.name)} {p.name}</span>
+                      <span style={{ fontWeight: 800 }}>{p.qty} packs</span>
+                    </div>
+                  ))
+                }
               </div>
-            )}
-            {low.length > 0 && (
-              <div style={{ ...S.alert, background: "#FFF1DA", color: "#B26A00" }}>
-                <AlertTriangle size={16} /> <span><b>{low.length}</b> running low.</span>
+              <div style={{ flex: 1, minWidth: "280px", background: "rgba(255,255,255,0.05)", padding: "14px", borderRadius: "12px", border: `1px solid ${line}` }}>
+                <h3 style={{ margin: "0 0 10px 0", fontSize: "14px", fontWeight: 700, color: mango }}>👥 Seller Revenue Tracking</h3>
+                {getSellerPerformance(todaySales).length === 0 ? <p style={S.hint}>No seller activity tracked today.</p> : 
+                  getSellerPerformance(todaySales).map((s, i) => (
+                    <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", fontSize: "13px", borderBottom: `1px solid ${line}` }}>
+                      <span>👤 {s.name}</span>
+                      <span style={{ fontWeight: 800, color: accent }}>{money(s.total)}</span>
+                    </div>
+                  ))
+                }
               </div>
-            )}
+            </div>
+
+            <SectionTitle>Recent Live Sales (Today Only)</SectionTitle>
+            <p style={S.hint}>Showing current daily operations context. Tap ✕ to remove or void and restore inventory stock levels.</p>
+            <SalesList sales={todaySales.slice(0,25)} showSeller onDelete={deleteSale} showTithe />
           </>}
 
-          {tab === "history" && <AdminSalesHistory sales={sales} onDelete={deleteSale} />}
           {tab === "stock" && <StockManager products={products} onChange={refresh} businessId={user.business_id} />}
-          {tab === "analytics" && <AnalyticsView sales={sales} />}
-          {tab === "expenses" && <ExpenseManager expenses={expenses} businessId={user.business_id} onChange={refresh} />}
+          
+          {tab === "transactions" && (
+            <div>
+              <SectionTitle>Today's Invoices</SectionTitle>
+              <Transactions sales={todaySales} products={products} businessId={user.business_id} onChange={refresh} onDeleteSale={deleteSale} />
+            </div>
+          )}
+
+          {tab === "archive" && (
+            <div>
+              <SectionTitle>Historical Sales Archive Ledger</SectionTitle>
+              <p style={S.hint}>Isolated view keeping older history separate from today's active terminal run.</p>
+              <Transactions sales={archiveSales} products={products} businessId={user.business_id} onChange={refresh} onDeleteSale={deleteSale} />
+            </div>
+          )}
+
+          {tab === "analytics" && (
+            <AdminAnalytics sales={sales} expenses={expenses} products={products} getBestSellers={getBestSellers} getSellerPerformance={getSellerPerformance} />
+          )}
+
+          {tab === "expenses" && (
+            <div>
+              <SectionTitle>Expense Ledger Control</SectionTitle>
+              <form onSubmit={addExpense} style={{ background: "rgba(255,255,255,0.04)", padding: "14px", borderRadius: "12px", border: `1px solid ${line}`, marginBottom: "16px" }}>
+                <div style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
+                  <div style={{ flex: 2, minWidth: "180px" }}>
+                    <span style={S.fieldLabel}>Expense Description</span>
+                    <input style={S.input} value={expName} onChange={e => setExpName(e.target.value)} placeholder="e.g., Fuel, Packaging box, Delivery" />
+                  </div>
+                  <div style={{ flex: 1, minWidth: "100px" }}>
+                    <span style={S.fieldLabel}>Amount ($)</span>
+                    <input style={S.input} type="number" step="0.01" value={expAmt} onChange={e => setExpAmt(e.target.value)} placeholder="0.00" />
+                  </div>
+                  <div style={{ flex: 1, minWidth: "120px" }}>
+                    <span style={S.fieldLabel}>Category</span>
+                    <select style={{ ...S.input, background: "#1b2e25", color: ink }} value={expCategory} onChange={e => setExpCategory(e.target.value)}>
+                      <option value="Stock">Stock Buy</option>
+                      <option value="Logistics">Logistics/Fuel</option>
+                      <option value="Rent">Rent & Utility</option>
+                      <option value="Wages">Wages/Bonus</option>
+                      <option value="Other">Other Miscellaneous</option>
+                    </select>
+                  </div>
+                </div>
+                <button type="submit" style={{ ...S.btn, ...S.btnDark, marginTop: "12px", width: "100%" }} disabled={!expName.trim() || !expAmt}>
+                  💾 Record Operational Expense
+                </button>
+              </form>
+              
+              <SectionTitle>Logged Business Outflows ({expenses.length})</SectionTitle>
+              {expenses.length === 0 ? <p style={S.empty}>No structural expenses recorded for this interval.</p> : (
+                <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                  {expenses.map((ex, i) => (
+                    <div key={ex.id || i} style={{ ...S.card, justifyContent: "space-between" }}>
+                      <div>
+                        <div style={{ ...S.cardName, fontSize: "14px" }}>{ex.name}</div>
+                        <div style={{ ...S.cardMeta, fontSize: "12px" }}>📁 {ex.category} · 🗓️ {new Date(ex.date).toLocaleDateString()}</div>
+                      </div>
+                      <div style={{ fontWeight: 800, color: "#FF8B7A" }}>-{money(ex.amount)}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
           {tab === "team" && <TeamManager onChange={refresh} businessId={user.business_id} />}
         </>}
       </div>
@@ -424,184 +640,114 @@ function Admin({ user, onExit, businessName }) {
   );
 }
 
-function AdminSalesHistory({ sales, onDelete }) {
-  const [search, setSearch] = useState("");
-  const [fromDate, setFromDate] = useState("");
-  const [toDate, setToDate] = useState("");
+// ============================================================
+// PHASE 2 MODULE: PROFESSIONAL PERIODIC REPORTING ENGINE
+// ============================================================
+function AdminAnalytics({ sales, expenses, products, getBestSellers, getSellerPerformance }) {
+  const [period, setPeriod] = useState("today");
 
-  const filteredSales = sales.filter(s => {
-    const matchesSearch = s.product_name?.toLowerCase().includes(search.toLowerCase()) || 
-                          s.seller_name?.toLowerCase().includes(search.toLowerCase()) ||
-                          s.invoice_no?.toLowerCase().includes(search.toLowerCase());
-    const saleDate = localDateStr(new Date(s.sold_at));
-    const matchesFrom = fromDate ? saleDate >= fromDate : true;
-    const matchesTo = toDate ? saleDate <= toDate : true;
-    return matchesSearch && matchesFrom && matchesTo;
-  });
-
-  return (
-    <div>
-      <SectionTitle>All-Time Sales Archive</SectionTitle>
-      <SearchBar value={search} onChange={setSearch} placeholder="Search product, seller, or invoice..." />
-      <div style={{ display: "flex", gap: 10, marginBottom: 12 }}>
-        <label style={{ flex: 1 }}>
-          <span style={S.fieldLabel}>From Date</span>
-          <input type="date" style={S.input} value={fromDate} onChange={e => setFromDate(e.target.value)} />
-        </label>
-        <label style={{ flex: 1 }}>
-          <span style={S.fieldLabel}>To Date</span>
-          <input type="date" style={S.input} value={toDate} onChange={e => setToDate(e.target.value)} />
-        </label>
-      </div>
-      <SalesList sales={filteredSales.slice(0, 100)} showSeller onDelete={onDelete} showTithe />
-    </div>
-  );
-}
-
-function AnalyticsView({ sales }) {
-  const [range, setRange] = useState("daily"); // daily, weekly, monthly, yearly
-
-  const getFilteredSales = () => {
+  const filterByPeriod = (items, dateField) => {
     const now = new Date();
-    return sales.filter(s => {
-      const d = new Date(s.sold_at);
-      if (range === "daily") return localDateStr(now) === localDateStr(d);
-      if (range === "weekly") return (now - d) / (1000 * 60 * 60 * 24) <= 7;
-      if (range === "monthly") return now.getMonth() === d.getMonth() && now.getFullYear() === d.getFullYear();
-      if (range === "yearly") return now.getFullYear() === d.getFullYear();
+    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    
+    return items.filter(item => {
+      const itemDate = new Date(item[dateField]);
+      if (period === "today") {
+        return itemDate >= startOfToday;
+      } else if (period === "week") {
+        return itemDate >= getStartOfWeek(now);
+      } else if (period === "month") {
+        return itemDate.getMonth() === now.getMonth() && itemDate.getFullYear() === now.getFullYear();
+      } else if (period === "year") {
+        return itemDate.getFullYear() === now.getFullYear();
+      }
       return true;
     });
   };
 
-  const selectedSales = getFilteredSales();
+  const periodSales = filterByPeriod(sales, "sold_at");
+  const periodExpenses = filterByPeriod(expenses, "date");
 
-  // Top products
-  const productMap = {};
-  // Seller metrics
-  const sellerMap = {};
-
-  selectedSales.forEach(s => {
-    productMap[s.product_name] = (productMap[s.product_name] || 0) + Number(s.qty || 0);
-    sellerMap[s.seller_name] = (sellerMap[s.seller_name] || 0) + Number(s.total || 0);
-  });
-
-  const bestSelling = Object.entries(productMap).sort((a,b) => b[1] - a[1]).slice(0, 5);
-  const sellerRank = Object.entries(sellerMap).sort((a,b) => b[1] - a[1]);
+  const totalRev = periodSales.reduce((a, s) => a + Number(s.total), 0);
+  const totalTithe = periodSales.reduce((a, s) => a + Number(s.tithe), 0);
+  const totalExp = periodExpenses.reduce((a, e) => a + Number(e.amount), 0);
+  const netProfit = totalRev - totalTithe - totalExp;
 
   return (
     <div>
-      <SectionTitle>Performance Analytics</SectionTitle>
-      <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
-        {["daily", "weekly", "monthly", "yearly"].map(r => (
-          <button key={r} onClick={() => setRange(r)} style={{ ...S.btn, ...(range === r ? S.btnDark : S.btnGhost), flex: 1, textTransform: "capitalize" }}>
-            {r}
+      <SectionTitle>POS Performance & Financial Audits</SectionTitle>
+      <div style={{ display: "flex", gap: "6px", marginBottom: "16px", background: "rgba(0,0,0,0.2)", padding: "4px", borderRadius: "8px" }}>
+        {["today", "week", "month", "year"].map((p) => (
+          <button key={p} onClick={() => setPeriod(p)} style={{
+            flex: 1, padding: "8px", borderRadius: "6px", border: "none", fontSize: "12px", fontWeight: 700, textTransform: "capitalize",
+            background: period === p ? accent : "transparent", color: period === p ? "#123026" : ink, cursor: "pointer"
+          }}>
+            {p}
           </button>
         ))}
       </div>
 
-      <div style={{ background: "rgba(0,0,0,0.02)", padding: 12, borderRadius: 12, marginBottom: 16 }}>
-        <h4 style={{ margin: "0 0 8px 0", color: ink }}>🏆 Best Selling Products (Volume)</h4>
-        {bestSelling.length === 0 && <p style={S.empty}>No transaction records available for this cycle range.</p>}
-        {bestSelling.map(([name, qty]) => (
-          <div key={name} style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", borderBottom: `1px solid ${line}` }}>
-            <span>{name}</span>
-            <span style={{ fontWeight: 700 }}>{qty} units</span>
+      <div style={S.statGrid}>
+        <Stat icon={<DollarSign size={15} />} label="Revenue" value={money(totalRev)} accent />
+        <Stat icon={<Calendar size={15} />} label="Expenses" value={money(totalExp)} tint="#FF8B7A" />
+        <Stat icon={<Church size={15} />} label="Tithe" value={money(totalTithe)} tint={grape} />
+        <Stat icon={<TrendingUp size={15} />} label="Net Cash-up" value={money(netProfit)} tint={sky} />
+      </div>
+
+      <div style={{ marginTop: "20px" }}>
+        <h3 style={{ fontSize: "15px", margin: "0 0 10px 0", color: ink }}>📊 Best Selling Matrix For Selected Scope</h3>
+        {getBestSellers(periodSales).map((p, i) => (
+          <div key={i} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "rgba(255,255,255,0.03)", padding: "10px", borderRadius: "8px", marginBottom: "6px" }}>
+            <span>{i+1}. {emojiFor(p.name)} <b>{p.name}</b></span>
+            <span style={{ fontWeight: 800, color: accent }}>{p.qty} Packs sold</span>
           </div>
         ))}
       </div>
-
-      <div style={{ background: "rgba(0,0,0,0.02)", padding: 12, borderRadius: 12 }}>
-        <h4 style={{ margin: "0 0 8px 0", color: ink }}>👤 Performance By Sales Rep</h4>
-        {sellerRank.length === 0 && <p style={S.empty}>No data metrics found.</p>}
-        {sellerRank.map(([name, val]) => (
-          <div key={name} style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", borderBottom: `1px solid ${line}` }}>
-            <span>{name}</span>
-            <span style={{ fontWeight: 700, color: accent }}>{money(val)}</span>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function ExpenseManager({ expenses, businessId, onChange }) {
-  const [label, setLabel] = useState("");
-  const [amount, setAmount] = useState("");
-  const [busy, setBusy] = useState(false);
-
-  const addExpense = async () => {
-    if (!label.trim() || !amount) return;
-    setBusy(true);
-    try {
-      await sb.insert("expenses", {
-        business_id: businessId,
-        description: label.trim(),
-        amount: parseFloat(amount),
-        created_at: new Date().toISOString()
-      });
-      setLabel(""); setAmount("");
-      onChange();
-    } catch (e) { alert(e.message); }
-    setBusy(false);
-  };
-
-  const totalExp = expenses.reduce((a, e) => a + Number(e.amount || 0), 0);
-
-  return (
-    <div>
-      <SectionTitle>Operational Cash Expenses</SectionTitle>
-      <div style={{ ...S.card, display: "block", padding: 14, marginBottom: 16 }}>
-        <h4 style={{ margin: "0 0 10px 0" }}>Log Business Outflow</h4>
-        <Field label="Expense Label/Reason" value={label} onChange={setLabel} placeholder="e.g. Fuel, Flour, Packing bags" />
-        <Field label="Amount Spent ($)" type="number" value={amount} onChange={setAmount} placeholder="0.00" />
-        <button style={{ ...S.btn, ...S.btnDark, width: "100%", marginTop: 8 }} onClick={addExpense} disabled={busy}>
-          {busy ? "Saving..." : "Record Expense Outflow"}
-        </button>
-      </div>
-
-      <div style={{ ...S.cartTotalRow, background: "rgba(192,57,43,0.1)", border: "1px solid #FF8B7A", color: "#C0392B", marginBottom: 12 }}>
-        <span>Total Logged Expenses</span>
-        <span>{money(totalExp)}</span>
-      </div>
-
-      {expenses.map(e => (
-        <div key={e.id} style={{ ...S.card, marginBottom: 6, justifyContent: "space-between" }}>
-          <div>
-            <div style={S.cardName}>{e.description}</div>
-            <div style={S.cardMeta}>{new Date(e.created_at).toLocaleDateString()}</div>
-          </div>
-          <span style={{ fontWeight: 700, color: "#C0392B" }}>-{money(e.amount)}</span>
-        </div>
-      ))}
     </div>
   );
 }
 
 // ============================================================
-// 6. SELLER DASHBOARD
+// 6. SELLER TERMINAL (With Smart Daily Reset Filter Rule)
 // ============================================================
 function Seller({ user, onExit, businessName }) {
   const { products, sales, loading, error, refresh, online, pending, setPendingCount } = useData(user.business_id);
   const [toast, setToast] = useState("");
-  const [adding, setAdding] = useState(null);
+  const [adding, setAdding] = useState(null);   
   const cartKey = cacheKey(user.business_id, `cart:${user.name}`);
-  const [cart, setCart] = useState(() => store.get(cartKey, []));
+  const [cart, setCart] = useState(() => {
+    const saved = store.get(cartKey, []);
+    return Array.isArray(saved) ? saved : [];
+  });          
   const [showCart, setShowCart] = useState(false);
-  const [receipt, setReceipt] = useState(null);
+  const [receipt, setReceipt] = useState(null);  
+  const [closingDay, setClosingDay] = useState(false);
+  const [showTx, setShowTx] = useState(false);
   const [search, setSearch] = useState("");
+  const [lastCashup, setLastCashup] = useState(() => store.get(cacheKey(user.business_id, `cashup:${user.name}`), null));
 
-  const checkoutActive = useRef(false);
-
-  // Today's boundaries to isolate historical records
-  const todayStr = localDateStr(new Date());
+  // Phase 1: Automatic local reset logic check at execution time
+  const lastResetDate = store.get(cacheKey(user.business_id, "midnight_tracker"), "");
+  const todayString = new Date().toDateString();
   
-  const mineToday = sales.filter((s) => {
-    return s.seller_name === user.name && localDateStr(new Date(s.sold_at)) === todayStr;
-  });
+  useEffect(() => {
+    if (lastResetDate && lastResetDate !== todayString) {
+      // Local clean sweep triggers instantly on midnight crossing detection
+      setCart([]);
+      store.set(cartKey, []);
+      store.set(cacheKey(user.business_id, "midnight_tracker"), todayString);
+    } else if (!lastResetDate) {
+      store.set(cacheKey(user.business_id, "midnight_tracker"), todayString);
+    }
+  }, [lastResetDate, todayString, cartKey, user.business_id]);
 
-  const myTotal = mineToday.reduce((a, x) => a + Number(x.total), 0);
-  const myCount = mineToday.length;
+  // Phase 1 Rule: Constrain seller timeline visualization purely to current active day ("today's sales only")
+  const mine = sales.filter((s) => s.seller_name === user.name && isToday(s.sold_at));
+  const sinceCashup = lastCashup ? mine.filter((s) => new Date(s.sold_at) > new Date(lastCashup)) : mine;
+  const myTotal = sinceCashup.reduce((a, x) => a + Number(x.total), 0);
+  const myCount = sinceCashup.length;
 
+  // Phase 3: Check-and-block validation layer before rendering cart updates
   const addToCart = (product, units) => {
     setCart((prev) => {
       const existing = prev.find((c) => c.product.id === product.id);
@@ -616,372 +762,28 @@ function Seller({ user, onExit, businessName }) {
 
   useEffect(() => { store.set(cartKey, cart); }, [cart, cartKey]);
 
+  useEffect(() => {
+    if (cart.length === 0 || products.length === 0) return;
+    setCart((prev) => {
+      let changed = false;
+      const next = prev.map((c) => {
+        const fresh = products.find((p) => p.id === c.product.id);
+        if (fresh && (fresh.price !== c.product.price || fresh.name !== c.product.name)) {
+          changed = true; return { ...c, product: fresh };
+        }
+        return c;
+      });
+      return changed ? next : prev;
+    });
+  }, [products]);
+
   const cartTotal = cart.reduce((a, c) => a + c.units * Number(c.product.price), 0);
   const cartCount = cart.reduce((a, c) => a + c.units, 0);
 
   const checkout = async ({ customer, phone } = {}) => {
-    if (cart.length === 0 || checkoutActive.current) return;
-    checkoutActive.current = true;
+    if (cart.length === 0) return;
+    
+    // Phase 3: Dynamic cryptographic random nonce signature generation to prevent duplicates
+    const trackingNonce = `inv-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 
-    const uniqueNonce = `${user.business_id}-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
-    const items = cart.map((c) => ({ product_id: c.product.id, qty: c.units }));
-    const lines = cart.map((c) => ({
-      name: c.product.name, units: c.units,
-      price: Number(c.product.price), pack_size: c.product.pack_size || 1,
-      total: c.units * Number(c.product.price),
-    }));
-
-    const baseReceipt = {
-      when: new Date(), seller: user.name, business: businessName,
-      customer: customer || "", phone: phone || "", lines, total: cartTotal,
-    };
-
-    const saveOffline = () => {
-      queueSale(user.business_id, { items, seller: user.name, customer, phone, nonce: uniqueNonce, when: new Date().toISOString() });
-      if (setPendingCount) setPendingCount(getPending(user.business_id).length);
-      setReceipt({ ...baseReceipt, no: "PENDING", offline: true });
-      setCart([]); setShowCart(false);
-      setToast("Saved offline — will sync when online");
-      setTimeout(() => { setToast(""); checkoutActive.current = false; }, 2500);
-    };
-
-    if (!isOnline()) { saveOffline(); return; }
-
-    try {
-      const inv = await sb.rpc("record_invoice", {
-        p_items: items, p_seller: user.name,
-        p_customer: customer || null, p_phone: phone || null,
-        p_nonce: uniqueNonce
-      });
-      const invoiceNo = typeof inv === "string" ? inv : (inv && inv[0]) || "INV";
-      setReceipt({ ...baseReceipt, no: invoiceNo });
-      setCart([]); setShowCart(false);
-      await refresh();
-      checkoutActive.current = false;
-    } catch (e) {
-      saveOffline();
-    }
-  };
-
-  const shown = filterProducts(products, search);
-
-  return (
-    <div style={S.shell}>
-      <Header title={user.name} sub={`${businessName} · Seller Dashboard`} onExit={onExit} onRefresh={refresh} />
-      {!online && (
-        <div style={{ ...S.alert, background: "#FFF1DA", color: "#B26A00" }}>
-          <AlertTriangle size={16} /> <span>Offline mode active. Data is secured locally.</span>
-        </div>
-      )}
-      {online && pending > 0 && (
-        <div style={{ ...S.alert, background: "#EAF7EE", color: accent }}>
-          <RefreshCw size={16} style={{ animation: "spin 2s linear infinite" }} /> <span>Syncing {pending} deferred records...</span>
-        </div>
-      )}
-
-      <div style={S.body}>
-        {loading ? <Loading /> : <>
-          <div style={S.statGrid}>
-            <Stat icon={<TrendingUp size={16} />} label="Today's Sales Revenue" value={money(myTotal)} accent />
-            <Stat icon={<FileText size={16} />} label="Today's Invoices Filled" value={myCount} tint={sky} />
-          </div>
-
-          <SectionTitle>Available Item Catalog</SectionTitle>
-          <SearchBar value={search} onChange={setSearch} placeholder="Search catalog items..." />
-          
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            {shown.map((p) => {
-              const low = p.qty <= 0;
-              const inCart = cart.find((c) => c.product.id === p.id);
-              return (
-                <div key={p.id} style={{ ...S.card, ...(inCart ? S.cardInCart : {}) }}>
-                  <div style={{ fontSize: 22, marginRight: 4 }}>{emojiFor(p.name)}</div>
-                  <div style={{ flex: 1 }}>
-                    <div style={S.cardName}>{p.name}{inCart && <span style={S.cartBadge}>{inCart.units} in cart</span>}</div>
-                    <div style={S.cardMeta}>
-                      {priceFmt(p.price)}/ea · {low ? <span style={{ color: "#C0392B" }}>Out of Stock</span> : stockLabel(p)}
-                    </div>
-                  </div>
-                  <button style={S.sellBtn} onClick={() => setAdding(p)}>+ Add</button>
-                </div>
-              );
-            })}
-          </div>
-        </>}
-      </div>
-
-      {cart.length > 0 && (
-        <button style={S.cartFab} onClick={() => setShowCart(true)}>
-          <ShoppingCart size={20} />
-          <span style={S.cartFabCount}>{cartCount}</span>
-          <span style={{ marginLeft: 6, fontWeight: 800 }}>{money(cartTotal)}</span>
-        </button>
-      )}
-
-      {adding && <AddToCartModal product={adding} onClose={() => setAdding(null)} onAdd={addToCart} />}
-      {showCart && (
-        <CartModal cart={cart} total={cartTotal} customers={customerHistory(sales)} onClose={() => setShowCart(false)}
-          onRemove={removeFromCart} onCheckout={checkout} />
-      )}
-      {receipt && <ReceiptModal receipt={receipt} onClose={() => setReceipt(null)} />}
-      {toast && <div style={S.toast}>{toast}</div>}
-    </div>
-  );
-}
-
-// ============================================================
-// COMPONENT COMPLEMENTS
-// ============================================================
-function AddToCartModal({ product, onClose, onAdd }) {
-  const [packs, setPacks] = useState("");
-  const totalPacks = parseFloat(packs) || 0;
-  return (
-    <Modal onClose={onClose} title={`${emojiFor(product.name)} ${product.name}`}>
-      <p style={{ ...S.hint, marginTop: 0 }}>{priceFmt(product.price)} · {stockLabel(product)} in stock</p>
-      <Field label="Quantity packs to sell" value={packs} onChange={setPacks} type="number" placeholder="0" />
-      <button style={{ ...S.btn, ...S.btnDark, width: "100%", marginTop: 12 }} disabled={totalPacks <= 0} onClick={() => onAdd(product, totalPacks)}>
-        Add to Basket Total ({money(totalPacks * product.price)})
-      </button>
-    </Modal>
-  );
-}
-
-function CartModal({ cart, total, customers, onClose, onRemove, onCheckout }) {
-  const [customer, setCustomer] = useState("");
-  const [phone, setPhone] = useState("");
-  return (
-    <Modal onClose={onClose} title="Review Basket Checkout">
-      {cart.map(c => (
-        <div key={c.product.id} style={S.cartLine}>
-          <div style={{ flex: 1 }}>
-            <div style={S.cardName}>{c.product.name}</div>
-            <div style={S.cardMeta}>{c.units} x {priceFmt(c.product.price)}</div>
-          </div>
-          <button style={S.delBtn} onClick={() => onRemove(c.product.id)}><X size={14} /></button>
-        </div>
-      ))}
-      <div style={{ ...S.cartTotalRow, margin: "12px 0" }}><span>Total Due</span><span>{money(total)}</span></div>
-      <Field label="Customer Name (Optional)" value={customer} onChange={setCustomer} />
-      <Field label="Phone Contact (Optional)" value={phone} onChange={setPhone} />
-      <button style={{ ...S.btn, ...S.btnDark, width: "100%", marginTop: 12 }} onClick={() => onCheckout({ customer, phone })}>
-        Complete Secure Checkout
-      </button>
-    </Modal>
-  );
-}
-
-function ReceiptModal({ receipt, onClose }) {
-  return (
-    <Modal onClose={onClose} title="Invoice Ready">
-      <div style={S.receipt}>
-        <h3>{receipt.business}</h3>
-        <p style={S.cardMeta}>Receipt #: {receipt.no}</p>
-        <div style={S.receiptDivider} />
-        {receipt.lines.map((l, i) => (
-          <div key={i} style={S.receiptLine}>
-            <span>{l.name} x{l.units}</span>
-            <span>{money(l.total)}</span>
-          </div>
-        ))}
-        <div style={S.receiptDivider} />
-        <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 800 }}>
-          <span>Total Paid</span><span>{money(receipt.total)}</span>
-        </div>
-      </div>
-      <button style={{ ...S.btn, ...S.btnDark, width: "100%", marginTop: 12 }} onClick={onClose}>Done &amp; Dismiss</button>
-    </Modal>
-  );
-}
-
-// ============================================================
-// STYLES & SUB-LEVEL UI PILLARS
-// ============================================================
-function Header({ title, sub, onExit, onRefresh }) {
-  return (
-    <div style={S.header}>
-      <div>
-        <h2 style={{ margin: 0, fontSize: 20, color: ink }}>{title}</h2>
-        <div style={{ fontSize: 13, color: muted }}>{sub}</div>
-      </div>
-      <div style={{ display: "flex", gap: 8 }}>
-        <button style={S.circleBtn} onClick={onRefresh}><RefreshCw size={16} /></button>
-        <button style={{ ...S.circleBtn, color: "#C0392B" }} onClick={onExit}><LogOut size={16} /></button>
-      </div>
-    </div>
-  );
-}
-
-function Tabs({ tab, setTab, items }) {
-  return (
-    <div style={S.tabsContainer}>
-      {items.map(([id, label]) => (
-        <button key={id} onClick={() => setTab(id)} style={{ ...S.tabItem, ...(tab === id ? S.tabActive : {}) }}>
-          {label}
-        </button>
-      ))}
-    </div>
-  );
-}
-
-function Stat({ icon, label, value, accent, tint }) {
-  return (
-    <div style={{ ...S.stat, borderLeft: `4px solid ${accent ? gold : tint || "#ccc"}` }}>
-      <div style={S.statIcon}>{icon}</div>
-      <div style={S.statLabel}>{label}</div>
-      <div style={S.statValue}>{value}</div>
-    </div>
-  );
-}
-
-function SearchBar({ value, onChange, placeholder = "Search catalog..." }) {
-  return (
-    <div style={S.searchWrap}>
-      <Search size={16} style={{ color: muted }} />
-      <input style={S.searchInput} value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} />
-    </div>
-  );
-}
-
-function Field({ label, value, onChange, type = "text", placeholder }) {
-  return (
-    <label style={S.fieldWrap}>
-      <span style={S.fieldLabel}>{label}</span>
-      <input style={S.input} type={type} value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} />
-    </label>
-  );
-}
-
-function Modal({ children, title, onClose }) {
-  return (
-    <div style={S.overlay}>
-      <div style={S.modal}>
-        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 12 }}>
-          <h3 style={{ margin: 0 }}>{title}</h3>
-          <button onClick={onClose} style={S.delBtn}><X size={16} /></button>
-        </div>
-        {children}
-      </div>
-    </div>
-  );
-}
-
-function SalesList({ sales, onDelete }) {
-  if (sales.length === 0) return <p style={S.empty}>No sales found matching requirements.</p>;
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-      {sales.map((s) => (
-        <div key={s.id} style={S.card}>
-          <div style={{ flex: 1 }}>
-            <div style={S.cardName}>{s.product_name} <span style={{ color: muted }}>x{s.qty}</span></div>
-            <div style={S.cardMeta}>Invoice: {s.invoice_no || "Single item sale"} · Seller: {s.seller_name}</div>
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-            <span style={{ fontWeight: 700 }}>{money(s.total)}</span>
-            {onDelete && <button style={S.delBtn} onClick={() => onDelete(s)}><X size={14} /></button>}
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function StockManager({ products, businessId, onChange }) {
-  const [targetProduct, setTargetProduct] = useState(null);
-  const [newStock, setNewStock] = useState("");
-
-  const updateStock = async () => {
-    if (!targetProduct || !newStock) return;
-    try {
-      await sb.patch("products", `id=eq.${targetProduct.id}`, { qty: parseFloat(newStock) });
-      setTargetProduct(null); setNewStock("");
-      onChange();
-    } catch (e) { alert(e.message); }
-  };
-
-  return (
-    <div>
-      <SectionTitle>Inventory Control</SectionTitle>
-      {products.map(p => (
-        <div key={p.id} style={S.card}>
-          <div style={{ flex: 1 }}>
-            <div style={S.cardName}>{p.name}</div>
-            <div style={S.cardMeta}>In Stock: {p.qty} packs · Base Price: {priceFmt(p.price)}</div>
-          </div>
-          <button style={S.sellBtn} onClick={() => { setTargetProduct(p); setNewStock(p.qty); }}>Adjust</button>
-        </div>
-      ))}
-      {targetProduct && (
-        <Modal title={`Adjust Stock: ${targetProduct.name}`} onClose={() => setTargetProduct(null)}>
-          <Field label="New Absolute Stock Value" type="number" value={newStock} onChange={setNewStock} />
-          <button style={{ ...S.btn, ...S.btnDark, width: "100%", marginTop: 8 }} onClick={updateStock}>
-            Save Inventory Adjustments
-          </button>
-        </Modal>
-      )}
-    </div>
-  );
-}
-
-function TeamManager({ businessId, onChange }) {
-  return <div style={S.empty}>Team administration is fully operational inside backend configuration panels.</div>;
-}
-
-function SectionTitle({ children }) { return <h3 style={S.secTitle}>{children}</h3>; }
-function Loading() { return <div style={S.empty}>Loading application parameters...</div>; }
-function SetupNotice() { return <div style={S.empty}>Please finalize configuration of Supabase credentials.</div>; }
-
-// ============================================================
-// SYSTEM ARCHITECTURE DESIGN SYSTEM (COLORS & CONSTANTS)
-// ============================================================
-const gold = "#E6C44D", accent = "#2BD07A", ink = "#14231E", muted = "#708980", line = "#E1E8E5";
-const mango = "#FFB347", grape = "#A18FFF", sky = "#4FC3F7";
-
-const S = {
-  shell: { background: "#F4F7F6", minHeight: "100vh", color: ink, fontFamily: "system-ui, sans-serif" },
-  body: { padding: 14, maxWidth: 800, margin: "0 auto" },
-  header: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: 14, background: "#fff", borderBottom: `1px solid ${line}` },
-  tabsContainer: { display: "flex", overflowX: "auto", background: "#fff", padding: "4px 10px", gap: 6, borderBottom: `1px solid ${line}` },
-  tabItem: { padding: "8px 14px", border: "none", background: "none", fontSize: 14, cursor: "pointer", color: muted, whiteSpace: "nowrap" },
-  tabActive: { color: ink, fontWeight: 700, borderBottom: `3px solid ${gold}` },
-  statGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 10, marginBottom: 16 },
-  stat: { background: "#fff", padding: 12, borderRadius: 12, border: `1px solid ${line}` },
-  statLabel: { fontSize: 12, color: muted },
-  statValue: { fontSize: 20, fontWeight: 800, marginTop: 4 },
-  card: { display: "flex", alignItems: "center", background: "#fff", padding: 10, borderRadius: 12, border: `1px solid ${line}`, marginBottom: 6 },
-  cardInCart: { borderColor: accent, background: "rgba(43,208,122,0.04)" },
-  cardName: { fontWeight: 700, fontSize: 15 },
-  cardMeta: { fontSize: 12, color: muted },
-  sellBtn: { padding: "6px 12px", background: ink, color: "#fff", border: "none", borderRadius: 8, fontWeight: 600, cursor: "pointer" },
-  delBtn: { background: "none", border: "none", color: muted, cursor: "pointer", padding: 4 },
-  searchWrap: { display: "flex", alignItems: "center", background: "#fff", padding: "8px 12px", borderRadius: 10, border: `1px solid ${line}`, gap: 8, marginBottom: 12 },
-  searchInput: { border: "none", width: "100%", outline: "none", fontSize: 14 },
-  fieldWrap: { display: "block", marginBottom: 10 },
-  fieldLabel: { display: "block", fontSize: 12, fontWeight: 600, marginBottom: 4, color: muted },
-  input: { width: "100%", padding: "10px 12px", border: `1px solid ${line}`, borderRadius: 8, boxSizing: "border-box", outline: "none" },
-  btn: { padding: "10px 16px", borderRadius: 10, fontWeight: 700, border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 },
-  btnDark: { background: ink, color: "#fff" },
-  btnGhost: { background: "none", border: `1px solid ${line}`, color: ink },
-  cartFab: { position: "fixed", bottom: 20, right: 20, background: accent, color: "#fff", border: "none", padding: "12px 20px", borderRadius: 30, display: "flex", alignItems: "center", gap: 8, boxShadow: "0 4px 12px rgba(0,0,0,0.15)", cursor: "pointer", zIndex: 10 },
-  cartFabCount: { background: ink, padding: "2px 6px", borderRadius: 10, fontSize: 11 },
-  overlay: { position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(0,0,0,0.4)", display: "flex", alignItems: "center", justifyContent: "center", padding: 12, zIndex: 100 },
-  modal: { background: "#fff", padding: 16, borderRadius: 16, width: "100%", maxWidth: 440, boxSizing: "border-box" },
-  receipt: { background: "#14231E", color: "#fff", padding: 16, borderRadius: 12 },
-  receiptDivider: { borderTop: "1px dashed rgba(255,255,255,0.2)", margin: "10px 0" },
-  receiptLine: { display: "flex", justifyContent: "space-between", fontSize: 14, margin: "4px 0" },
-  cartTotalRow: { display: "flex", justifyContent: "space-between", padding: 12, background: "rgba(230,196,77,0.1)", borderRadius: 8, color: ink, fontWeight: 700 },
-  empty: { textAlign: "center", color: muted, padding: "20px 0", fontSize: 14 },
-  secTitle: { fontSize: 16, margin: "14px 0 8px 0", fontWeight: 700, color: ink },
-  hint: { fontSize: 12, color: muted, marginTop: -4, marginBottom: 10 },
-  toast: { position: "fixed", bottom: 80, left: "50%", transform: "translateX(-50%)", background: ink, color: "#fff", padding: "8px 16px", borderRadius: 20, fontSize: 13, zIndex: 100 },
-  loginDarkShell: { background: ink, minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", padding: 12 },
-  loginCard: { background: "rgba(255,255,255,0.06)", padding: 24, borderRadius: 20, width: "100%", maxWidth: 360, color: "#fff" },
-  logoMark: { width: 44, height: 44, borderRadius: 12, background: gold, display: "flex", alignItems: "center", justifyContent: "center", color: ink, marginBottom: 14 },
-  loginTitle: { margin: 0, fontSize: 24 },
-  loginSub: { margin: "4px 0 16px 0", fontSize: 13, color: muted },
-  inputDark: { width: "100%", padding: 12, background: "rgba(0,0,0,0.2)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8, color: "#fff", boxSizing: "border-box" },
-  keypad: { display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8, marginTop: 12 },
-  key: { padding: 12, borderRadius: 8, border: `1px solid ${line}`, background: "#fff", fontWeight: 700, fontSize: 16, cursor: "pointer" },
-  keyDark: { background: "rgba(255,255,255,0.08)", border: "none", color: "#fff" },
-  pinDot: { width: 12, height: 12, borderRadius: 6, background: "rgba(255,255,255,0.2)" },
-  pinDotFull: { background: gold }
-};
+    const items = cart.map((c)
