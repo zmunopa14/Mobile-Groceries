@@ -394,7 +394,7 @@ function Admin({ user, onExit, businessName }) {
   const { products, sales, loading, error, refresh } = useData(user.business_id);
   const [tab, setTab] = useState("overview");
 
-  // Today-only stats for the overview dashboard — full history lives in Transactions/Compare
+  // Overview shows TODAY only — full history lives in Transactions / Daily History
   const todayStr = localDateStr(new Date());
   const todaySales = sales.filter((s) => localDateStr(new Date(s.sold_at)) === todayStr);
   const totalSales = todaySales.reduce((a, x) => a + Number(x.total), 0);
@@ -451,7 +451,7 @@ function Admin({ user, onExit, businessName }) {
           {tab === "customers" && <Customers sales={sales} />}
           {tab === "compare" && <Compare sales={sales} />}
           {tab === "cashups" && <CashUps businessId={user.business_id} />}
-          {tab === "history" && <DailyHistory sales={sales} businessId={user.business_id} />}
+          {tab === "history" && <DailyHistory sales={sales} />}
           {tab === "report" && <Report sales={sales} totalSales={totalSales} totalTithe={totalTithe} cash={cash} low={[...out, ...low]} />}
           {tab === "team" && <TeamManager onChange={refresh} businessId={user.business_id} />}
         </>}
@@ -958,25 +958,48 @@ function SellerInvoices({ sales, allSales, businessName, sellerName, products, b
   );
 }
 
-// Day-end cash-up: seller reviews today's sales, enters cash, submits to admin
+// Day-end cash-up: seller reviews sales for a chosen date and submits to admin.
+// Receives ALL of this seller's sales so any past date can be looked up.
 function CloseDayModal({ sales, user, onClose, onSubmitted }) {
   const todayStr = localDateStr(new Date());
   const [day, setDay] = useState(todayStr);
   const [cash, setCash] = useState("");
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
-  const [expenses, setExpenses] = useState([]); // {amount, note, photo_url}
+  const [expenses, setExpenses] = useState([]);
   const [addingExp, setAddingExp] = useState(false);
+  // If sales for this date aren't in the DB (e.g. admin reset, offline never synced),
+  // the seller can override the total manually.
+  const [manualTotal, setManualTotal] = useState("");
+  const [useManual, setUseManual] = useState(false);
 
-  const dayInvoices = groupByInvoice(sales.filter((s) => localDateStr(new Date(s.sold_at)) === day));
-  const salesTotal = dayInvoices.reduce((a, inv) => a + inv.total, 0);
+  // Look up ALL sales for the selected date across all time
+  const dayInvoices = groupByInvoice(
+    sales.filter((s) => localDateStr(new Date(s.sold_at)) === day)
+  );
+  const dbTotal = dayInvoices.reduce((a, inv) => a + inv.total, 0);
+  const noDbSales = dayInvoices.length === 0;
+
+  // If no DB sales found and no manual override yet, auto-suggest manual mode
+  useEffect(() => {
+    if (noDbSales) setUseManual(true);
+    else setUseManual(false);
+  }, [day, noDbSales]);
+
+  const manualNum = parseFloat(manualTotal);
+  const salesTotal = useManual && !isNaN(manualNum) ? manualNum : dbTotal;
+
   const expensesTotal = expenses.reduce((a, e) => a + Number(e.amount || 0), 0);
   const expectedCash = salesTotal - expensesTotal;
   const cashNum = parseFloat(cash);
   const hasCash = cash !== "" && !isNaN(cashNum);
   const diff = hasCash ? cashNum - expectedCash : 0;
 
+  // Can submit if: we have a valid total (from DB or manual) and cash entered
+  const canSubmit = salesTotal > 0 || (useManual && manualTotal !== "");
+
   const submit = async () => {
+    if (!canSubmit) return;
     setBusy(true);
     try {
       await sb.insert("day_reports", {
@@ -985,8 +1008,11 @@ function CloseDayModal({ sales, user, onClose, onSubmitted }) {
         report_date: day,
         sales_total: salesTotal,
         cash_in_hand: hasCash ? cashNum : 0,
-        tx_count: dayInvoices.length,
-        note: note.trim() || null,
+        tx_count: useManual && noDbSales ? null : dayInvoices.length,
+        note: [
+          useManual && noDbSales ? `⚠️ Sales entered manually (not found in DB): $${salesTotal.toFixed(2)}` : "",
+          note.trim(),
+        ].filter(Boolean).join(" | ") || null,
         expenses: expenses,
         expenses_total: expensesTotal,
         confirmed: false,
@@ -999,16 +1025,55 @@ function CloseDayModal({ sales, user, onClose, onSubmitted }) {
   return (
     <Modal onClose={onClose} title="📋 Close day">
       <div style={{ ...S.fieldWrap }}>
-        <span style={S.fieldLabel}>Day</span>
-        <input style={S.input} type="date" value={day} max={todayStr} onChange={(e) => setDay(e.target.value)} />
-      </div>
-      <div style={S.cartTotalRow}>
-        <span>Sales total ({dayInvoices.length} sale{dayInvoices.length === 1 ? "" : "s"})</span>
-        <span>{money(salesTotal)}</span>
+        <span style={S.fieldLabel}>Which day are you submitting?</span>
+        <input style={S.input} type="date" value={day} max={todayStr}
+          onChange={(e) => { setDay(e.target.value); setManualTotal(""); setCash(""); setExpenses([]); }} />
       </div>
 
+      {/* Sales total row */}
+      {!noDbSales ? (
+        <>
+          <div style={S.cartTotalRow}>
+            <span>Sales from records ({dayInvoices.length} sale{dayInvoices.length === 1 ? "" : "s"})</span>
+            <span>{money(dbTotal)}</span>
+          </div>
+          <p style={{ ...S.hint, marginTop: 6 }}>
+            These are sales recorded in the app for {day}.{" "}
+            <button style={{ background: "none", border: "none", color: accent, cursor: "pointer", padding: 0, fontWeight: 700, fontSize: "inherit" }}
+              onClick={() => setUseManual((v) => !v)}>
+              {useManual ? "Use recorded total instead" : "Override total manually"}
+            </button>
+          </p>
+          {useManual && (
+            <div style={{ ...S.fieldWrap, marginTop: -4 }}>
+              <span style={S.fieldLabel}>Manual sales total ($) — overrides the recorded figure</span>
+              <input style={S.input} type="number" value={manualTotal} placeholder={`e.g. ${dbTotal.toFixed(2)}`}
+                onChange={(e) => setManualTotal(e.target.value)} />
+            </div>
+          )}
+        </>
+      ) : (
+        <>
+          <div style={{ ...S.alert, background: "rgba(245,166,35,0.15)", color: "#B26A00", margin: "0 0 10px" }}>
+            <AlertTriangle size={16} />
+            <span>No sales found in the app for <b>{day}</b>. This can happen if sales weren't synced before the daily reset. Enter the total manually below.</span>
+          </div>
+          <div style={S.fieldWrap}>
+            <span style={S.fieldLabel}>Sales total for {day} ($)</span>
+            <input style={S.input} type="number" value={manualTotal} placeholder="e.g. 91.00"
+              onChange={(e) => setManualTotal(e.target.value)} />
+          </div>
+          {salesTotal > 0 && (
+            <div style={S.cartTotalRow}>
+              <span>Total to submit</span>
+              <span>{money(salesTotal)}</span>
+            </div>
+          )}
+        </>
+      )}
+
       <SectionTitle>Money spent (raw materials etc.)</SectionTitle>
-      <p style={S.hint}>Add anything you paid for out of the cash, with a photo of the receipt.</p>
+      <p style={S.hint}>Add anything paid out of the cash, with a photo of the receipt.</p>
       {expenses.map((e, i) => (
         <div key={i} style={{ ...S.cartLine, marginBottom: 6 }}>
           <div style={{ flex: 1 }}>
@@ -1028,34 +1093,42 @@ function CloseDayModal({ sales, user, onClose, onSubmitted }) {
       )}
 
       <SectionTitle>Cash</SectionTitle>
-      <div style={S.cartTotalRow}>
-        <span>Expected cash (sales − spent)</span>
-        <span>{money(expectedCash)}</span>
-      </div>
+      {salesTotal > 0 && (
+        <div style={S.cartTotalRow}>
+          <span>Expected cash (sales − spent)</span>
+          <span>{money(expectedCash)}</span>
+        </div>
+      )}
       <Field label="Actual cash in hand ($)" value={cash} onChange={setCash} type="number" placeholder="0.00" />
-      {hasCash && (
+      {hasCash && salesTotal > 0 && (
         <div style={{ ...S.cartTotalRow, background: Math.abs(diff) < 0.005 ? "rgba(43,208,122,0.15)" : "rgba(245,166,35,0.15)", color: diff < -0.005 ? "#FF8B7A" : accent }}>
           <span>{diff < -0.005 ? "Short by" : diff > 0.005 ? "Over by" : "Matches exactly"}</span>
           <span>{Math.abs(diff) < 0.005 ? "✓" : money(Math.abs(diff))}</span>
         </div>
       )}
-      <Field label="Note for admin (optional)" value={note} onChange={setNote} placeholder="e.g. gave 2 on credit" />
+      <Field label="Note for admin (optional)" value={note} onChange={setNote} placeholder="e.g. $91 from weekend sales not in app" />
 
-      <SectionTitle>Today's transactions</SectionTitle>
-      {dayInvoices.length === 0 && <p style={S.empty}>No sales recorded for this day.</p>}
-      <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 8 }}>
-        {dayInvoices.map((inv) => (
-          <div key={inv.key} style={S.saleRow}>
-            <div style={{ flex: 1 }}>
-              <div style={S.saleName}>{inv.customer || "No name"}</div>
-              <div style={S.cardMeta}>{inv.lines.length} item{inv.lines.length > 1 ? "s" : ""} · {new Date(inv.when).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</div>
-            </div>
-            <div style={S.saleName}>{money(inv.total)}</div>
+      {/* Show DB invoices if they exist */}
+      {!noDbSales && (
+        <>
+          <SectionTitle>Transactions on record for {day}</SectionTitle>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 8 }}>
+            {dayInvoices.map((inv) => (
+              <div key={inv.key} style={S.saleRow}>
+                <div style={{ flex: 1 }}>
+                  <div style={S.saleName}>{inv.customer || "No name"}</div>
+                  <div style={S.cardMeta}>{inv.lines.length} item{inv.lines.length > 1 ? "s" : ""} · {new Date(inv.when).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</div>
+                </div>
+                <div style={S.saleName}>{money(inv.total)}</div>
+              </div>
+            ))}
           </div>
-        ))}
-      </div>
+        </>
+      )}
 
-      <button style={{ ...S.btn, ...S.btnDark, width: "100%" }} disabled={busy || dayInvoices.length === 0} onClick={submit}>
+      <button style={{ ...S.btn, ...S.btnDark, width: "100%" }}
+        disabled={busy || !canSubmit || (useManual && noDbSales && !manualTotal)}
+        onClick={submit}>
         <Check size={18} /> {busy ? "Submitting…" : "Submit to admin"}
       </button>
 
@@ -2226,23 +2299,20 @@ function SetupNotice() {
 }
 
 // ============================================================
-// DAILY HISTORY (admin) — past days' sales archived here
-// Overview always shows TODAY only; all past data lives here.
+// DAILY HISTORY (admin) — archived past days' sales
 // ============================================================
-function DailyHistory({ sales, businessId }) {
+function DailyHistory({ sales }) {
   const todayStr = localDateStr(new Date());
 
-  // Group sales by date, excluding today (today lives in Overview)
   const byDay = {};
   sales.forEach((s) => {
     const d = localDateStr(new Date(s.sold_at));
-    if (d === todayStr) return; // today is in Overview
+    if (d === todayStr) return;
     if (!byDay[d]) byDay[d] = [];
     byDay[d].push(s);
   });
 
-  const days = Object.keys(byDay).sort((a, b) => b.localeCompare(a)); // newest first
-
+  const days = Object.keys(byDay).sort((a, b) => b.localeCompare(a));
   const [openDay, setOpenDay] = useState(null);
   const [prodQ, setProdQ] = useState("");
 
@@ -2250,15 +2320,13 @@ function DailyHistory({ sales, businessId }) {
     return (
       <>
         <SectionTitle>Daily History</SectionTitle>
-        <p style={S.hint}>Past days' sales will appear here. Today's sales are shown in Overview.</p>
+        <p style={S.hint}>Past days' sales will appear here. Today's sales are in Overview.</p>
         <p style={S.empty}>No past sales yet.</p>
       </>
     );
   }
 
   const selected = openDay ? byDay[openDay] : null;
-
-  // Product breakdown for the selected day
   const byProduct = {};
   if (selected) {
     selected.forEach((s) => {
@@ -2268,7 +2336,6 @@ function DailyHistory({ sales, businessId }) {
       byProduct[k].total += Number(s.total);
     });
   }
-
   const filteredProducts = Object.entries(byProduct).filter(([name]) =>
     !prodQ.trim() || name.toLowerCase().includes(prodQ.trim().toLowerCase())
   );
@@ -2276,7 +2343,7 @@ function DailyHistory({ sales, businessId }) {
   return (
     <>
       <SectionTitle>Daily History</SectionTitle>
-      <p style={S.hint}>Today's sales are in Overview. Tap any past day to see its breakdown.</p>
+      <p style={S.hint}>Today's sales are in Overview. Tap a past day to see its full breakdown.</p>
 
       {!openDay ? (
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
@@ -2287,14 +2354,12 @@ function DailyHistory({ sales, businessId }) {
             const invoiceSet = new Set(rows.map((s) => s.invoice_no || s.id));
             return (
               <button key={d} style={{ ...S.card, width: "100%", textAlign: "left", cursor: "pointer" }}
-                onClick={() => setOpenDay(d)}>
+                onClick={() => { setOpenDay(d); setProdQ(""); }}>
                 <div style={{ flex: 1 }}>
                   <div style={S.cardName}>
                     {new Date(d + "T12:00:00").toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" })}
                   </div>
-                  <div style={S.cardMeta}>
-                    {invoiceSet.size} sale{invoiceSet.size === 1 ? "" : "s"} · {money(tithe)} to God
-                  </div>
+                  <div style={S.cardMeta}>{invoiceSet.size} sale{invoiceSet.size === 1 ? "" : "s"} · {money(tithe)} to God</div>
                 </div>
                 <div style={{ textAlign: "right" }}>
                   <div style={{ ...S.statValue, fontSize: 17 }}>{money(total)}</div>
@@ -2307,7 +2372,7 @@ function DailyHistory({ sales, businessId }) {
         </div>
       ) : (
         <>
-          <button style={{ ...S.btn, ...S.btnGhost, marginBottom: 12 }} onClick={() => { setOpenDay(null); setProdQ(""); }}>
+          <button style={{ ...S.btn, ...S.btnGhost, marginBottom: 12 }} onClick={() => setOpenDay(null)}>
             ← Back to all days
           </button>
           <div style={S.reportHead}>
@@ -2322,15 +2387,13 @@ function DailyHistory({ sales, businessId }) {
               </div>
             </div>
           </div>
-
           <div style={S.searchWrap}>
             <Search size={16} style={{ color: muted, flexShrink: 0 }} />
             <input style={S.searchInput} value={prodQ} placeholder="Search a product…"
               onChange={(e) => setProdQ(e.target.value)} />
             {prodQ && <button style={S.searchClear} onClick={() => setProdQ("")}><X size={15} /></button>}
           </div>
-
-          <SectionTitle>Sales by product</SectionTitle>
+          <SectionTitle>By product</SectionTitle>
           {filteredProducts.length === 0 && <p style={S.empty}>No products match.</p>}
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {filteredProducts.sort((a, b) => b[1].total - a[1].total).map(([name, d]) => (
@@ -2344,8 +2407,7 @@ function DailyHistory({ sales, businessId }) {
               </div>
             ))}
           </div>
-
-          <SectionTitle>Invoices that day</SectionTitle>
+          <SectionTitle>All invoices</SectionTitle>
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {groupByInvoice(selected).map((inv) => (
               <div key={inv.key} style={S.card}>
@@ -2370,7 +2432,8 @@ function DailyHistory({ sales, businessId }) {
 }
 
 // ============================================================
-
+// 11. STYLES
+// ============================================================
 const ink = "#EAF3EC", paper = "#0c241d", accent = "#2bd07a", line = "rgba(230,196,77,0.18)";
 const lime = "#7CC243", mango = "#F5A623", berry = "#E0457B", sky = "#2FA7D8", grape = "#7C5CD6";
 const gold = "#C9A227", goldLt = "#E6C44D", darkbg = "#0c241d", darkbg2 = "#11342a", darkcard = "rgba(255,255,255,0.05)";
