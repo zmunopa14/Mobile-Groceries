@@ -397,6 +397,13 @@ function Admin({ user, onExit, businessName }) {
   const totalSales = sales.reduce((a, x) => a + Number(x.total), 0);
   const totalTithe = sales.reduce((a, x) => a + Number(x.tithe), 0);
   const cash = totalSales - totalTithe;
+  // Overview shows TODAY only (resets at midnight). Full history still powers
+  // the Tuesday report and Compare tab.
+  const todayStr = localDateStr(new Date());
+  const todaySales = sales.filter((s) => localDateStr(new Date(s.sold_at)) === todayStr);
+  const daySales = todaySales.reduce((a, x) => a + Number(x.total), 0);
+  const dayTithe = todaySales.reduce((a, x) => a + Number(x.tithe), 0);
+  const dayCash = daySales - dayTithe;
   const low = products.filter((p) => p.qty <= p.low_at && p.qty > 0);
   const out = products.filter((p) => p.qty <= 0);
 
@@ -434,14 +441,14 @@ function Admin({ user, onExit, businessName }) {
         {loading ? <Loading /> : <>
           {tab === "overview" && <>
             <div style={S.statGrid}>
-              <Stat icon={<TrendingUp size={16} />} label="Total sales" value={money(totalSales)} accent delay={0} />
-              <Stat icon={<Wallet size={16} />} label="Cash in hand" value={money(cash)} tint={mango} delay={0.05} />
-              <Stat icon={<Church size={16} />} label="To God" value={money(totalTithe)} tint={grape} delay={0.1} />
+              <Stat icon={<TrendingUp size={16} />} label="Sales today" value={money(daySales)} accent delay={0} />
+              <Stat icon={<Wallet size={16} />} label="Cash today" value={money(dayCash)} tint={mango} delay={0.05} />
+              <Stat icon={<Church size={16} />} label="To God today" value={money(dayTithe)} tint={grape} delay={0.1} />
               <Stat icon={<Package size={16} />} label="Items in stock" value={products.reduce((a,p)=>a+p.qty,0)} tint={sky} delay={0.15} />
             </div>
-            <SectionTitle>Recent sales</SectionTitle>
+            <SectionTitle>Today's sales</SectionTitle>
             <p style={S.hint}>Tap the ✕ to remove a sale — its stock is returned automatically.</p>
-            <SalesList sales={sales.slice(0,20)} showSeller onDelete={deleteSale} showTithe />
+            <SalesList sales={todaySales.slice(0,30)} showSeller onDelete={deleteSale} showTithe />
           </>}
           {tab === "stock" && <StockManager products={products} onChange={refresh} businessId={user.business_id} />}
           {tab === "transactions" && <Transactions sales={sales} products={products} businessId={user.business_id} onChange={refresh} onDeleteSale={deleteSale} />}
