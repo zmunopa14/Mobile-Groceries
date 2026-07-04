@@ -968,8 +968,31 @@ function CloseDayModal({ sales, user, onClose, onSubmitted }) {
   const [busy, setBusy] = useState(false);
   const [expenses, setExpenses] = useState([]); // {amount, note, photo_url}
   const [addingExp, setAddingExp] = useState(false);
+  const [sinceTime, setSinceTime] = useState(null);   // cutoff: last cash-up time for this day
+  const [priorCount, setPriorCount] = useState(0);    // how many cash-ups already done this day
 
-  const dayInvoices = groupByInvoice(sales.filter((s) => localDateStr(new Date(s.sold_at)) === day));
+  // When the chosen day changes, find the most recent cash-up already submitted
+  // for this seller+day. Only sales AFTER that time count for the new cash-up.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const rows = await sb.select("day_reports",
+          `business_id=eq.${user.business_id}&seller_name=eq.${encodeURIComponent(user.name)}&report_date=eq.${day}&order=created_at.desc`);
+        if (cancelled) return;
+        setPriorCount(rows.length);
+        setSinceTime(rows.length > 0 ? rows[0].created_at : null);
+      } catch { if (!cancelled) { setSinceTime(null); setPriorCount(0); } }
+    })();
+    return () => { cancelled = true; };
+  }, [day, user.business_id, user.name]);
+
+  const dayInvoices = groupByInvoice(
+    sales.filter((s) =>
+      localDateStr(new Date(s.sold_at)) === day &&
+      (!sinceTime || new Date(s.sold_at) > new Date(sinceTime))
+    )
+  );
   const salesTotal = dayInvoices.reduce((a, inv) => a + inv.total, 0);
   const expensesTotal = expenses.reduce((a, e) => a + Number(e.amount || 0), 0);
   const expectedCash = salesTotal - expensesTotal;
@@ -1003,8 +1026,13 @@ function CloseDayModal({ sales, user, onClose, onSubmitted }) {
         <span style={S.fieldLabel}>Day</span>
         <input style={S.input} type="date" value={day} max={todayStr} onChange={(e) => setDay(e.target.value)} />
       </div>
+      {priorCount > 0 && (
+        <p style={{ ...S.hint, color: mango, marginTop: 0 }}>
+          You already did {priorCount} cash-up{priorCount > 1 ? "s" : ""} for this day. This one covers only sales made since then.
+        </p>
+      )}
       <div style={S.cartTotalRow}>
-        <span>Sales total ({dayInvoices.length} sale{dayInvoices.length === 1 ? "" : "s"})</span>
+        <span>{priorCount > 0 ? "New sales since last cash-up" : "Sales total"} ({dayInvoices.length})</span>
         <span>{money(salesTotal)}</span>
       </div>
 
