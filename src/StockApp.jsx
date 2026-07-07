@@ -1433,6 +1433,8 @@ function Transactions({ sales, products, businessId, onChange, onDeleteSale }) {
   const [fromQ, setFromQ] = useState("");
   const [toQ, setToQ] = useState("");
   const [editing, setEditing] = useState(null);
+  const [viewing, setViewing] = useState(null);
+  const [confirmDel, setConfirmDel] = useState(null);
 
   const inRange = (when) => {
     const d = localDateStr(new Date(when));
@@ -1493,24 +1495,33 @@ function Transactions({ sales, products, businessId, onChange, onDeleteSale }) {
       {invoices.length === 0 && <p style={S.empty}>No invoices match your search.</p>}
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {invoices.map((inv) => (
-          <div key={inv.key} style={S.card}>
-            <div style={{ flex: 1 }}>
-              <div style={S.cardName}>{inv.customer || "No name"} {inv.invoice_no && <span style={S.invTag}>{inv.invoice_no}</span>}</div>
-              <div style={S.cardMeta}>
-                {new Date(inv.when).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
-                {" · "}{inv.lines.length} item{inv.lines.length > 1 ? "s" : ""} · {inv.seller}
+          <div key={inv.key} style={{ ...S.card, flexDirection: "column", alignItems: "stretch", gap: 10 }}>
+            <button onClick={() => setViewing(inv)}
+              style={{ display: "flex", alignItems: "center", gap: 12, background: "none", border: "none", padding: 0, cursor: "pointer", textAlign: "left", color: "inherit", width: "100%" }}>
+              <div style={{ flex: 1 }}>
+                <div style={S.cardName}>{inv.customer || "No name"} {inv.invoice_no && <span style={S.invTag}>{inv.invoice_no}</span>}</div>
+                <div style={S.cardMeta}>
+                  {new Date(inv.when).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+                  {" · "}{inv.lines.length} item{inv.lines.length > 1 ? "s" : ""} · {inv.seller}
+                </div>
+                {inv.phone && <div style={S.cardMeta}>{inv.phone}</div>}
               </div>
-              {inv.phone && <div style={S.cardMeta}>{inv.phone}</div>}
-            </div>
-            <div style={{ textAlign: "right" }}>
-              <div style={S.saleName}>{money(inv.total)}</div>
-            </div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-              {inv.invoice_no
-                ? <button style={S.editBtn} onClick={() => setEditing(inv)}><Pencil size={15} /></button>
-                : null}
-              <button style={S.delBtn} onClick={() => onDeleteSale(inv.lines[0])}><X size={16} /></button>
-            </div>
+              <div style={{ textAlign: "right" }}>
+                <div style={S.saleName}>{money(inv.total)}</div>
+                <div style={{ fontSize: 11, color: accent, fontWeight: 700 }}>Tap to view ›</div>
+              </div>
+            </button>
+            {inv.invoice_no && (
+              <div style={{ display: "flex", gap: 8, borderTop: `1px solid ${line}`, paddingTop: 8 }}>
+                <button style={{ ...S.btn, ...S.btnGhost, flex: 1, padding: "9px 0" }} onClick={() => setEditing(inv)}>
+                  <Pencil size={15} /> Edit
+                </button>
+                <button style={{ ...S.btn, flex: 1, padding: "9px 0", background: "rgba(192,57,43,0.15)", color: "#FF8B7A", border: `1px solid rgba(192,57,43,0.3)` }}
+                  onClick={() => setConfirmDel(inv)}>
+                  <X size={15} /> Delete
+                </button>
+              </div>
+            )}
           </div>
         ))}
       </div>
@@ -1518,6 +1529,48 @@ function Transactions({ sales, products, businessId, onChange, onDeleteSale }) {
       {editing && (
         <EditInvoiceModal invoice={editing} products={products}
           onClose={() => setEditing(null)} onChange={onChange} />
+      )}
+
+      {viewing && (
+        <Modal onClose={() => setViewing(null)} title={viewing.invoice_no || "Invoice"}>
+          <div style={{ ...S.cardMeta, marginBottom: 8 }}>
+            {viewing.customer || "No name"}{viewing.phone ? ` · ${viewing.phone}` : ""}<br/>
+            {new Date(viewing.when).toLocaleString()} · sold by {viewing.seller}
+          </div>
+          {viewing.lines.map((l, i) => (
+            <div key={i} style={{ ...S.receiptLine }}>
+              <span style={{ flex: 1 }}>{l.product_name} <span style={{ color: muted }}>×{l.qty}</span></span>
+              <span style={{ fontWeight: 700 }}>{money(l.total)}</span>
+            </div>
+          ))}
+          <div style={{ ...S.cartTotalRow, marginTop: 10 }}>
+            <span>Total</span><span>{money(viewing.total)}</span>
+          </div>
+          {viewing.invoice_no && (
+            <button style={{ ...S.btn, ...S.btnGhost, width: "100%", marginTop: 12 }}
+              onClick={() => { const inv = viewing; setViewing(null); setEditing(inv); }}>
+              <Pencil size={16} /> Edit this invoice
+            </button>
+          )}
+        </Modal>
+      )}
+
+      {confirmDel && (
+        <Modal onClose={() => setConfirmDel(null)} title="Delete this invoice?">
+          <p style={{ ...S.hint, marginTop: 0 }}>
+            {confirmDel.invoice_no} · {confirmDel.customer || "No name"} · {money(confirmDel.total)}
+          </p>
+          <p style={{ ...S.hint, color: "#FF8B7A" }}>
+            This permanently removes the sale and returns its stock. It cannot be undone.
+          </p>
+          <button style={{ ...S.btn, width: "100%", background: "rgba(192,57,43,0.9)", color: "#fff" }}
+            onClick={() => { onDeleteSale(confirmDel.lines[0]); setConfirmDel(null); }}>
+            Yes, delete it
+          </button>
+          <button style={{ ...S.btn, ...S.btnGhost, width: "100%", marginTop: 8 }} onClick={() => setConfirmDel(null)}>
+            Cancel
+          </button>
+        </Modal>
       )}
     </>
   );
