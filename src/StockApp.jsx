@@ -1179,6 +1179,42 @@ async function readAmountFromImage(file) {
 // ============================================================
 // 7. STOCK MANAGER (admin)
 // ============================================================
+// Tappable stock number — type the exact quantity, saves on Enter or when you tap away
+function StockEditor({ product, onSet }) {
+  const [editing, setEditing] = useState(false);
+  const [val, setVal] = useState(String(product.qty));
+
+  const start = () => { setVal(String(product.qty)); setEditing(true); };
+  const commit = () => {
+    setEditing(false);
+    if (val !== "" && parseFloat(val) !== product.qty) onSet(val);
+  };
+
+  if (editing) {
+    return (
+      <input
+        autoFocus
+        type="number"
+        inputMode="decimal"
+        value={val}
+        onChange={(e) => setVal(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }}
+        style={{ ...S.input, width: 70, textAlign: "center", padding: "8px 6px", fontWeight: 800 }}
+      />
+    );
+  }
+  return (
+    <button onClick={start} title="Tap to set stock"
+      style={{ minWidth: 62, padding: "8px 6px", borderRadius: 10, border: `1px solid ${line}`,
+        background: "rgba(255,255,255,0.06)", color: ink, fontWeight: 800, fontSize: 16, cursor: "pointer",
+        display: "flex", flexDirection: "column", alignItems: "center", gap: 2 }}>
+      <span>{product.qty}</span>
+      <span style={{ fontSize: 9, color: muted, fontWeight: 600 }}>tap to edit</span>
+    </button>
+  );
+}
+
 function StockManager({ products, onChange, businessId }) {
   const [open, setOpen] = useState(false);
   const [bulk, setBulk] = useState(false);
@@ -1229,6 +1265,12 @@ function StockManager({ products, onChange, businessId }) {
     await sb.patch("products", `id=eq.${p.id}`, { qty: Math.max(0, p.qty + units) });
     await onChange();
   };
+  const setStock = async (p, value) => {
+    const n = parseFloat(value);
+    if (isNaN(n)) return;
+    await sb.patch("products", `id=eq.${p.id}`, { qty: n });
+    await onChange();
+  };
   const remove = async (id) => {
     await sb.del("products", `id=eq.${id}`);
     await onChange();
@@ -1262,11 +1304,7 @@ function StockManager({ products, onChange, businessId }) {
                 <div style={S.cardMeta}>{priceFmt(p.price)}/pack · {p.tithe_pct}% to God{ps > 1 ? ` · pack of ${ps}` : ""}</div>
                 <div style={{ ...S.cardMeta, color: p.qty <= 0 ? "#C0392B" : "#1F9D55", fontWeight: 600 }}>{p.qty <= 0 ? `${p.qty} packs — out of stock` : stockLabel(p)}</div>
               </div>
-              <div style={S.qtyCtrl}>
-                <button style={S.qtyBtn} onClick={() => restock(p, -1)}><Minus size={14} /></button>
-                <span style={S.qtyNum}>{p.qty}</span>
-                <button style={S.qtyBtn} onClick={() => restock(p, 1)}><Plus size={14} /></button>
-              </div>
+              <StockEditor product={p} onSet={(v) => setStock(p, v)} />
               <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
                 <button style={S.editBtn} onClick={() => setEditing(p)}><Pencil size={15} /></button>
                 <button style={S.delBtn} onClick={() => remove(p.id)}><X size={16} /></button>
