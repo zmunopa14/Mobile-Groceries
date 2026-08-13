@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   Package, TrendingUp, Users, AlertTriangle, Plus, Minus, LogOut,
-  Church, Wallet, FileText, ChevronRight, Box, X, Check, Delete, RefreshCw, Search, Pencil, ShoppingCart, Send
+  Church, Wallet, FileText, ChevronRight, Box, X, Check, Delete, RefreshCw, Search, Pencil, ShoppingCart, Send, Menu
 } from "lucide-react";
 
 // ============================================================
@@ -1215,12 +1215,51 @@ function StockEditor({ product, onSet }) {
   );
 }
 
+// Left slide-out menu for switching product categories
+function CategorySidebar({ open, onClose, current, onPick, counts }) {
+  if (!open) return null;
+  const items = ["All", ...CATEGORIES];
+  return (
+    <div onClick={onClose}
+      style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 70, display: "flex" }}>
+      <div onClick={(e) => e.stopPropagation()}
+        style={{ width: 260, maxWidth: "80%", height: "100%", background: "#0f2c22", borderRight: `1px solid ${line}`,
+          padding: "22px 16px", boxShadow: "8px 0 30px rgba(0,0,0,0.5)", animation: "slideIn 0.2s ease" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 18 }}>
+          <span style={{ fontWeight: 800, fontSize: 18, color: goldLt }}>Categories</span>
+          <button onClick={onClose} style={{ background: "none", border: "none", color: ink, cursor: "pointer", padding: 4 }}><X size={20} /></button>
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          {items.map((c) => {
+            const active = current === c;
+            return (
+              <button key={c} onClick={() => onPick(c)}
+                style={{ display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%",
+                  padding: "13px 14px", borderRadius: 12, cursor: "pointer", textAlign: "left",
+                  border: active ? `1px solid ${goldLt}` : `1px solid ${line}`,
+                  background: active ? "rgba(230,196,77,0.15)" : "rgba(255,255,255,0.04)",
+                  color: ink, fontWeight: active ? 800 : 600, fontSize: 15 }}>
+                <span>{c === "All" ? "All products" : c}</span>
+                <span style={{ color: muted, fontSize: 12 }}>{counts[c] ?? 0}</span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const CATEGORIES = ["Samah", "Mu & Mu", "Elike", "Konga", "Other"];
+
 function StockManager({ products, onChange, businessId }) {
   const [open, setOpen] = useState(false);
   const [bulk, setBulk] = useState(false);
   const [editing, setEditing] = useState(null); // product being edited
   const [search, setSearch] = useState("");
-  const [f, setF] = useState({ name: "", price: "", pct: "", packs: "", units: "", pack_size: "1", low: "5" });
+  const [cat, setCat] = useState("All");        // category filter
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [f, setF] = useState({ name: "", price: "", pct: "", packs: "", units: "", pack_size: "1", low: "5", category: "Samah" });
   const [busy, setBusy] = useState(false);
   const [copying, setCopying] = useState(false);
 
@@ -1233,9 +1272,10 @@ function StockManager({ products, onChange, businessId }) {
       await sb.insert("products", {
         name: f.name.trim(), price: parseFloat(f.price) || 0,
         tithe_pct: parseFloat(f.pct) || 0, qty: parseFloat(f.packs) || 0,
-        pack_size: parseInt(f.pack_size) || 1, low_at: parseInt(f.low) || 5, business_id: businessId,
+        pack_size: parseInt(f.pack_size) || 1, low_at: parseInt(f.low) || 5,
+        category: f.category || "Samah", business_id: businessId,
       });
-      setF({ name: "", price: "", pct: "", packs: "", units: "", pack_size: "1", low: "5" });
+      setF({ name: "", price: "", pct: "", packs: "", units: "", pack_size: "1", low: "5", category: "Samah" });
       setOpen(false); await onChange();
     } catch (e) { alert(e.message); }
     setBusy(false);
@@ -1276,10 +1316,22 @@ function StockManager({ products, onChange, businessId }) {
     await onChange();
   };
 
-  const shown = filterProducts(products, search);
+  const byCat = cat === "All" ? products : products.filter((p) => (p.category || "Samah") === cat);
+  const shown = filterProducts(byCat, search);
+  const catCount = (c) => products.filter((p) => (p.category || "Samah") === c).length;
 
   return (
     <>
+      <CategorySidebar open={menuOpen} onClose={() => setMenuOpen(false)}
+        current={cat} onPick={(c) => { setCat(c); setMenuOpen(false); }}
+        counts={{ All: products.length, ...Object.fromEntries(CATEGORIES.map((c) => [c, catCount(c)])) }} />
+
+      <button onClick={() => setMenuOpen(true)}
+        style={{ ...S.btn, ...S.btnGhost, width: "100%", marginBottom: 12, justifyContent: "space-between" }}>
+        <span style={{ display: "flex", alignItems: "center", gap: 8 }}><Menu size={18} /> {cat === "All" ? "All products" : cat}</span>
+        <span style={{ color: muted, fontSize: 12 }}>tap to switch ›</span>
+      </button>
+
       <button style={{ ...S.btn, ...S.btnDark, width: "100%", marginBottom: 10 }} onClick={() => setOpen(true)}>
         <Plus size={18} /> Add new product
       </button>
@@ -1293,7 +1345,7 @@ function StockManager({ products, onChange, businessId }) {
       )}
       {products.length > 0 && <SearchBar value={search} onChange={setSearch} />}
       {products.length === 0 && <p style={S.empty}>No products yet. Add your first item above.</p>}
-      {products.length > 0 && shown.length === 0 && <p style={S.empty}>No products match “{search}”.</p>}
+      {products.length > 0 && shown.length === 0 && <p style={S.empty}>{search ? `No products match “${search}”.` : `No products in ${cat} yet.`}</p>}
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {shown.map((p) => {
           const ps = p.pack_size || 1;
@@ -1301,7 +1353,7 @@ function StockManager({ products, onChange, businessId }) {
             <div key={p.id} style={S.card}>
               <div style={{ flex: 1 }}>
                 <div style={S.cardName}>{p.name} {p.qty <= 0 ? <span style={S.outTag}>out — restock</span> : p.qty <= p.low_at ? <span style={S.lowTag}>low</span> : null}</div>
-                <div style={S.cardMeta}>{priceFmt(p.price)}/pack · {p.tithe_pct}% to God{ps > 1 ? ` · pack of ${ps}` : ""}</div>
+                <div style={S.cardMeta}>{priceFmt(p.price)}/pack · {p.tithe_pct}% to God{ps > 1 ? ` · pack of ${ps}` : ""} · <span style={{ color: goldLt }}>{p.category || "Samah"}</span></div>
                 <div style={{ ...S.cardMeta, color: p.qty <= 0 ? "#C0392B" : "#1F9D55", fontWeight: 600 }}>{p.qty <= 0 ? `${p.qty} packs — out of stock` : stockLabel(p)}</div>
               </div>
               <StockEditor product={p} onSet={(v) => setStock(p, v)} />
@@ -1319,6 +1371,12 @@ function StockManager({ products, onChange, businessId }) {
           <Field label="Selling price per pack ($)" value={f.price} onChange={(v)=>setF({...f,price:v})} type="number" placeholder="9.50" />
           <Field label="Items in a pack (label only, e.g. 20)" value={f.pack_size} onChange={(v)=>setF({...f,pack_size:v})} type="number" placeholder="20" />
           <Field label="Percentage to God (%)" value={f.pct} onChange={(v)=>setF({...f,pct:v})} type="number" placeholder="10" />
+          <label style={S.fieldWrap}>
+            <span style={S.fieldLabel}>Category</span>
+            <select style={S.input} value={f.category} onChange={(e)=>setF({...f,category:e.target.value})}>
+              {CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </label>
           <Field label="Opening stock (packs)" value={f.packs} onChange={(v)=>setF({...f,packs:v})} type="number" placeholder="0" />
           <Field label="Warn me when packs drop to" value={f.low} onChange={(v)=>setF({...f,low:v})} type="number" placeholder="5" />
           <button style={{ ...S.btn, ...S.btnDark, width: "100%", marginTop: 8 }} disabled={busy} onClick={add}>
@@ -1354,6 +1412,7 @@ function BulkAddModal({ businessId, onClose, onDone }) {
         qty: parseFloat(it.qty) || 0,
         pack_size: parseInt(it.pack_size) || 1,
         low_at: 5,
+        category: "Samah",
         business_id: businessId,
       }));
       await sb.insert("products", rows);
@@ -1416,6 +1475,7 @@ function EditProductModal({ product, onClose, onSave }) {
   const [pct, setPct] = useState(String(product.tithe_pct));
   const [packSize, setPackSize] = useState(String(product.pack_size || 1));
   const [low, setLow] = useState(String(product.low_at));
+  const [category, setCategory] = useState(product.category || "Samah");
   const [busy, setBusy] = useState(false);
 
   const save = async () => {
@@ -1427,6 +1487,7 @@ function EditProductModal({ product, onClose, onSave }) {
       tithe_pct: parseFloat(pct) || 0,
       pack_size: parseInt(packSize) || 1,
       low_at: parseInt(low) || 5,
+      category,
     });
     setBusy(false);
   };
@@ -1437,8 +1498,14 @@ function EditProductModal({ product, onClose, onSave }) {
       <Field label="Selling price per pack ($)" value={price} onChange={setPrice} type="number" />
       <Field label="Percentage to God (%)" value={pct} onChange={setPct} type="number" />
       <Field label="Items in a pack (label only)" value={packSize} onChange={setPackSize} type="number" />
+      <label style={S.fieldWrap}>
+        <span style={S.fieldLabel}>Category</span>
+        <select style={S.input} value={category} onChange={(e)=>setCategory(e.target.value)}>
+          {CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+        </select>
+      </label>
       <Field label="Warn me when units drop to" value={low} onChange={setLow} type="number" />
-      <p style={{ ...S.hint, marginBottom: 4 }}>To change quantity, use the + / − buttons on the stock list.</p>
+      <p style={{ ...S.hint, marginBottom: 4 }}>To change quantity, tap the stock number on the list and type it.</p>
       <button style={{ ...S.btn, ...S.btnDark, width: "100%", marginTop: 4 }} disabled={busy} onClick={save}>
         <Check size={18} /> {busy ? "Saving…" : "Save changes"}
       </button>
@@ -2463,6 +2530,7 @@ if (typeof document !== "undefined" && !document.getElementById("sf-spin")) {
     @keyframes pop{0%{transform:scale(0.97);opacity:0.6}100%{transform:scale(1);opacity:1}}
     @keyframes rise{0%{transform:translateY(14px);opacity:0}100%{transform:translateY(0);opacity:1}}
     @keyframes popIn{0%{transform:scale(0.9);opacity:0}100%{transform:scale(1);opacity:1}}
+    @keyframes slideIn{0%{transform:translateX(-100%)}100%{transform:translateX(0)}}
     @keyframes bob{0%,100%{transform:translateY(0)}50%{transform:translateY(-6px)}}
     button{transition:transform 0.08s ease, filter 0.12s ease}
     button:active{transform:scale(0.95)}
