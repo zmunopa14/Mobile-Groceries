@@ -2340,8 +2340,10 @@ function Report({ sales, products, low }) {
   const [weekOffset, setWeekOffset] = useState(0);   // 0 = current week
   const [cat, setCat] = useState("All");
 
-  const catOf = {};
-  (products || []).forEach((p) => { catOf[p.name] = p.category || "Samah"; });
+  const catOf = {}, pctOf = {};
+  (products || []).forEach((p) => { catOf[p.name] = p.category || "Samah"; pctOf[p.name] = Number(p.tithe_pct) || 0; });
+  // Live "to God" for a sale row, using the product's CURRENT percentage
+  const titheOf = (s) => Number(s.total) * (pctOf[s.product_name] || 0) / 100;
 
   const now = new Date();
   const dow = now.getDay();
@@ -2355,12 +2357,24 @@ function Report({ sales, products, low }) {
     const d = localDateStr(new Date(s.sold_at));
     return d >= startStr && d <= endStr;
   };
+  const weekRows = sales.filter(inWeek);                 // all categories, this week
   const inCat = (s) => cat === "All" || (catOf[s.product_name] || "Samah") === cat;
-  const rows = sales.filter((s) => inWeek(s) && inCat(s));
+  const rows = weekRows.filter(inCat);                   // selected category
 
   const totalSales = rows.reduce((a, s) => a + Number(s.total), 0);
-  const totalTithe = rows.reduce((a, s) => a + Number(s.tithe), 0);
+  const totalTithe = rows.reduce((a, s) => a + titheOf(s), 0);
   const cash = totalSales - totalTithe;
+
+  // Per-category breakdown for the whole week (always shown)
+  const catRows = {};
+  weekRows.forEach((s) => {
+    const c = catOf[s.product_name] || "Samah";
+    catRows[c] = catRows[c] || { sales: 0, tithe: 0 };
+    catRows[c].sales += Number(s.total);
+    catRows[c].tithe += titheOf(s);
+  });
+  const weekTotalSales = weekRows.reduce((a, s) => a + Number(s.total), 0);
+  const weekTotalTithe = weekRows.reduce((a, s) => a + titheOf(s), 0);
 
   const byProduct = {};
   rows.forEach((s) => {
@@ -2368,7 +2382,7 @@ function Report({ sales, products, low }) {
     byProduct[k] = byProduct[k] || { qty: 0, total: 0, tithe: 0 };
     byProduct[k].qty += Number(s.qty);
     byProduct[k].total += Number(s.total);
-    byProduct[k].tithe += Number(s.tithe);
+    byProduct[k].tithe += titheOf(s);
   });
 
   return (
@@ -2402,7 +2416,31 @@ function Report({ sales, products, low }) {
         <Stat icon={<Package size={16} />} label="Packs sold" value={Object.values(byProduct).reduce((a,p)=>a+p.qty,0)} tint={sky} delay={0.15} />
       </div>
 
-      <SectionTitle>By product</SectionTitle>
+      <SectionTitle>This week by company</SectionTitle>
+      <div style={{ ...S.card, flexDirection: "column", alignItems: "stretch", gap: 0 }}>
+        <div style={{ display: "flex", fontSize: 11, color: muted, fontWeight: 700, textTransform: "uppercase", paddingBottom: 6, borderBottom: `1px solid ${line}` }}>
+          <div style={{ flex: 1 }}>Company</div>
+          <div style={{ width: 90, textAlign: "right" }}>Sales</div>
+          <div style={{ width: 90, textAlign: "right" }}>To God</div>
+        </div>
+        {CATEGORIES.map((c) => {
+          const d = catRows[c] || { sales: 0, tithe: 0 };
+          return (
+            <div key={c} style={{ display: "flex", alignItems: "center", padding: "9px 0", borderBottom: `1px solid ${line}` }}>
+              <div style={{ flex: 1, fontWeight: 600 }}>{c}</div>
+              <div style={{ width: 90, textAlign: "right", fontWeight: 700 }}>{money(d.sales)}</div>
+              <div style={{ width: 90, textAlign: "right", fontWeight: 700, color: goldLt }}>{money(d.tithe)}</div>
+            </div>
+          );
+        })}
+        <div style={{ display: "flex", alignItems: "center", padding: "10px 0 0", fontWeight: 800 }}>
+          <div style={{ flex: 1 }}>TOTAL</div>
+          <div style={{ width: 90, textAlign: "right", color: accent }}>{money(weekTotalSales)}</div>
+          <div style={{ width: 90, textAlign: "right", color: goldLt }}>{money(weekTotalTithe)}</div>
+        </div>
+      </div>
+
+      <SectionTitle>By product{cat !== "All" ? ` — ${cat}` : ""}</SectionTitle>
       {Object.keys(byProduct).length === 0 && <p style={S.empty}>No sales for this week{cat !== "All" ? ` in ${cat}` : ""}.</p>}
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {Object.entries(byProduct).sort((a,b)=>b[1].total-a[1].total).map(([name, d]) => (
