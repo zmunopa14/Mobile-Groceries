@@ -435,7 +435,7 @@ function Admin({ user, onExit, businessName }) {
         </div>
       )}
       <Tabs tab={tab} setTab={setTab} items={[
-        ["overview","Overview"],["stock","Stock"],["transactions","Invoices"],["customers","Customers"],["compare","Compare"],["cashups","Cash-ups"],["report","Tuesday report"],["team","Team"],
+        ["overview","Overview"],["stock","Stock"],["transactions","Sales"],["order","Order"],["customers","Customers"],["compare","Compare"],["cashups","Cash-ups"],["report","Tuesday report"],["team","Team"],
       ]} />
       <div style={S.body}>
         {loading ? <Loading /> : <>
@@ -452,10 +452,11 @@ function Admin({ user, onExit, businessName }) {
           </>}
           {tab === "stock" && <StockManager products={products} onChange={refresh} businessId={user.business_id} />}
           {tab === "transactions" && <Transactions sales={sales} products={products} businessId={user.business_id} onChange={refresh} onDeleteSale={deleteSale} />}
+          {tab === "order" && <OrderList products={products} sales={sales} businessName={businessName} />}
           {tab === "customers" && <Customers sales={sales} />}
           {tab === "compare" && <Compare sales={sales} />}
-          {tab === "cashups" && <CashUps businessId={user.business_id} />}
-          {tab === "report" && <Report sales={sales} totalSales={totalSales} totalTithe={totalTithe} cash={cash} low={[...out, ...low]} />}
+          {tab === "cashups" && <CashUps businessId={user.business_id} sales={sales} />}
+          {tab === "report" && <Report sales={sales} products={products} low={[...out, ...low]} />}
           {tab === "team" && <TeamManager onChange={refresh} businessId={user.business_id} />}
         </>}
       </div>
@@ -526,7 +527,7 @@ function Seller({ user, onExit, businessName }) {
   const cartTotal = cart.reduce((a, c) => a + c.units * Number(c.product.price), 0);
   const cartCount = cart.reduce((a, c) => a + c.units, 0);
 
-  const checkout = async ({ customer, phone } = {}) => {
+  const checkout = async ({ customer, phone, discount = 0, finalTotal } = {}) => {
     if (cart.length === 0) return;
     const items = cart.map((c) => ({ product_id: c.product.id, qty: c.units }));
     const lines = cart.map((c) => ({
@@ -536,7 +537,9 @@ function Seller({ user, onExit, businessName }) {
     }));
     const baseReceipt = {
       when: new Date(), seller: user.name, business: businessName,
-      customer: customer || "", phone: phone || "", lines, total: cartTotal,
+      customer: customer || "", phone: phone || "", lines,
+      subtotal: cartTotal, discount: discount || 0,
+      total: finalTotal != null ? finalTotal : cartTotal,
     };
 
     const saveOffline = () => {
@@ -703,11 +706,24 @@ function CartModal({ cart, total, customers = [], onClose, onRemove, onCheckout 
   const [customer, setCustomer] = useState("");
   const [phone, setPhone] = useState("");
   const [showSug, setShowSug] = useState(false);
-  const go = async () => { setBusy(true); await onCheckout({ customer: customer.trim(), phone: phone.trim() }); setBusy(false); };
+  const [discType, setDiscType] = useState("none"); // none | pct | flat
+  const [discVal, setDiscVal] = useState("");
+
+  const discNum = parseFloat(discVal) || 0;
+  const discount = discType === "pct" ? total * Math.min(discNum, 100) / 100
+                 : discType === "flat" ? Math.min(discNum, total)
+                 : 0;
+  const finalTotal = Math.max(0, total - discount);
+
+  const go = async () => {
+    setBusy(true);
+    await onCheckout({ customer: customer.trim(), phone: phone.trim(), discount, finalTotal });
+    setBusy(false);
+  };
 
   const recNum = parseFloat(received);
   const hasReceived = received !== "" && !isNaN(recNum);
-  const change = hasReceived ? recNum - total : 0;
+  const change = hasReceived ? recNum - finalTotal : 0;
   const shortfall = hasReceived && change < 0;
 
   const q = customer.trim().toLowerCase();
@@ -732,13 +748,34 @@ function CartModal({ cart, total, customers = [], onClose, onRemove, onCheckout 
           </div>
         ))}
       </div>
+
       <div style={S.cartTotalRow}>
-        <span>Total</span>
+        <span>Subtotal</span>
         <span>{money(total)}</span>
       </div>
 
+      <label style={{ ...S.fieldWrap, marginTop: 10 }}>
+        <span style={S.fieldLabel}>Discount</span>
+        <div style={{ display: "flex", gap: 8 }}>
+          <select style={{ ...S.input, flex: 1 }} value={discType} onChange={(e) => setDiscType(e.target.value)}>
+            <option value="none">No discount</option>
+            <option value="pct">Percentage %</option>
+            <option value="flat">Flat amount $</option>
+          </select>
+          {discType !== "none" && (
+            <input style={{ ...S.input, width: 90 }} type="number" value={discVal}
+              onChange={(e) => setDiscVal(e.target.value)} placeholder={discType === "pct" ? "10" : "5.00"} />
+          )}
+        </div>
+      </label>
+      {discount > 0 && (
+        <div style={{ ...S.cartTotalRow, background: "rgba(230,196,77,0.12)" }}>
+          <span>After discount (−{money(discount)})</span>
+          <span>{money(finalTotal)}</span>
+        </div>
+      )}
       <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
-        <div style={{ flex: 1, position: "relative" }}>
+        <div style={{ flex: 1 }}>
           <label style={S.fieldWrap}>
             <span style={S.fieldLabel}>Customer name</span>
             <input style={S.input} value={customer} placeholder="e.g. Mai Moyo"
@@ -746,7 +783,7 @@ function CartModal({ cart, total, customers = [], onClose, onRemove, onCheckout 
               onFocus={() => setShowSug(true)} />
           </label>
           {showSug && suggestions.length > 0 && (
-            <div style={S.sugBox}>
+            <div style={{ ...S.sugBox, position: "static", marginTop: 6, boxShadow: "none" }}>
               {suggestions.map((c) => (
                 <button key={c.name} style={S.sugItem} onClick={() => pick(c)}>
                   <span style={{ fontWeight: 600 }}>{c.name}</span>
@@ -779,7 +816,6 @@ function ReceiptModal({ receipt, onClose }) {
   const text = receiptText(receipt);
   const cleanPhone = (receipt.phone || "").replace(/[^\d+]/g, "");
   const smsToCustomer = () => {
-    // Open the phone's default SMS app, addressed to the customer, with the receipt prefilled
     const body = encodeURIComponent(text);
     window.location.href = `sms:${cleanPhone}?body=${body}`;
   };
@@ -789,6 +825,35 @@ function ReceiptModal({ receipt, onClose }) {
       else { await navigator.clipboard.writeText(text); alert("Receipt copied — you can paste it into WhatsApp or SMS."); }
     } catch {}
   };
+  const downloadPdf = () => {
+    const w = window.open("", "_blank");
+    if (!w) { alert("Please allow pop-ups to save the PDF."); return; }
+    const rows = receipt.lines.map((l) =>
+      `<tr><td>${l.name} ×${l.units}</td><td style="text-align:right">${money(l.total)}</td></tr>`).join("");
+    const discRow = receipt.discount > 0
+      ? `<tr><td>Subtotal</td><td style="text-align:right">${money(receipt.subtotal)}</td></tr>
+         <tr><td>Discount</td><td style="text-align:right">- ${money(receipt.discount)}</td></tr>` : "";
+    w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Receipt ${receipt.no}</title>
+      <style>
+        body{font-family:Arial,sans-serif;max-width:400px;margin:24px auto;padding:0 16px;color:#152019}
+        h1{font-size:22px;margin:0 0 2px;text-align:center}
+        .meta{color:#666;font-size:13px;text-align:center;margin-bottom:2px}
+        table{width:100%;border-collapse:collapse;margin-top:14px;font-size:14px}
+        td{padding:5px 0;border-bottom:1px solid #eee}
+        .total td{font-weight:800;font-size:17px;border-bottom:none;border-top:2px solid #152019;padding-top:8px}
+        .foot{text-align:center;color:#666;font-size:12px;margin-top:16px}
+      </style></head><body>
+      <h1>${receipt.business}</h1>
+      <div class="meta">Receipt ${receipt.no}</div>
+      <div class="meta">${receipt.when.toLocaleString()}</div>
+      ${receipt.customer ? `<div class="meta">Customer: ${receipt.customer}${receipt.phone ? " · " + receipt.phone : ""}</div>` : ""}
+      <table>${rows}${discRow}<tr class="total"><td>TOTAL</td><td style="text-align:right">${money(receipt.total)}</td></tr></table>
+      <div class="foot">Served by ${receipt.seller}<br/>Thank you!</div>
+      <script>window.onload=function(){window.print();}</script>
+      </body></html>`);
+    w.document.close();
+  };
+
   return (
     <Modal onClose={onClose} title="✅ Sale complete">
       <div style={S.receipt}>
@@ -810,6 +875,10 @@ function ReceiptModal({ receipt, onClose }) {
           </div>
         ))}
         <div style={S.receiptDivider} />
+        {receipt.discount > 0 && <>
+          <div style={S.receiptLine}><span style={{ flex: 1, color: muted }}>Subtotal</span><span>{money(receipt.subtotal)}</span></div>
+          <div style={S.receiptLine}><span style={{ flex: 1, color: goldLt }}>Discount</span><span style={{ color: goldLt }}>− {money(receipt.discount)}</span></div>
+        </>}
         <div style={{ ...S.receiptLine, fontWeight: 800, fontSize: 16 }}>
           <span style={{ flex: 1 }}>Total</span>
           <span>{money(receipt.total)}</span>
@@ -821,8 +890,11 @@ function ReceiptModal({ receipt, onClose }) {
           <Send size={17} /> Text receipt to {receipt.customer || "customer"}
         </button>
       )}
-      <button style={{ ...S.btn, ...(cleanPhone ? S.btnGhost : S.btnDark), width: "100%", marginTop: 8 }} onClick={share}>
-        <Send size={17} /> Share receipt another way
+      <button style={{ ...S.btn, ...S.btnGold, width: "100%", marginTop: 8 }} onClick={downloadPdf}>
+        <FileText size={17} /> Save / send as PDF
+      </button>
+      <button style={{ ...S.btn, ...(cleanPhone ? S.btnGhost : S.btnGhost), width: "100%", marginTop: 8 }} onClick={share}>
+        <Send size={17} /> Share another way
       </button>
       <button style={{ ...S.btn, ...S.btnGhost, width: "100%", marginTop: 8 }} onClick={onClose}>Done</button>
     </Modal>
@@ -832,7 +904,8 @@ function ReceiptModal({ receipt, onClose }) {
 function receiptText(r) {
   const lines = r.lines.map((l) => `${l.name} x${l.units}  ${money(l.total)}`).join("\n");
   const cust = r.customer ? `\nCustomer: ${r.customer}${r.phone ? ` (${r.phone})` : ""}` : "";
-  return `${r.business}\nReceipt ${r.no}\n${r.when.toLocaleString()}${cust}\n\n${lines}\n\nTOTAL: ${money(r.total)}\nServed by ${r.seller}\nThank you!`;
+  const disc = r.discount > 0 ? `\nSubtotal: ${money(r.subtotal)}\nDiscount: -${money(r.discount)}` : "";
+  return `${r.business}\nReceipt ${r.no}\n${r.when.toLocaleString()}${cust}\n\n${lines}${disc}\n\nTOTAL: ${money(r.total)}\nServed by ${r.seller}\nThank you!`;
 }
 
 // Seller's own invoices — tappable, opens the receipt to review
@@ -1215,16 +1288,16 @@ function StockEditor({ product, onSet }) {
   );
 }
 
-// Left slide-out menu for switching product categories
-function CategorySidebar({ open, onClose, current, onPick, counts }) {
+// Left slide-out menu for switching product categories + stock actions
+function CategorySidebar({ open, onClose, current, onPick, counts, onAdd, onBulk, onCopy, copyLabel }) {
   if (!open) return null;
   const items = ["All", ...CATEGORIES];
   return (
     <div onClick={onClose}
       style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 70, display: "flex" }}>
       <div onClick={(e) => e.stopPropagation()}
-        style={{ width: 260, maxWidth: "80%", height: "100%", background: "#0f2c22", borderRight: `1px solid ${line}`,
-          padding: "22px 16px", boxShadow: "8px 0 30px rgba(0,0,0,0.5)", animation: "slideIn 0.2s ease" }}>
+        style={{ width: 270, maxWidth: "82%", height: "100%", background: "#0f2c22", borderRight: `1px solid ${line}`,
+          padding: "22px 16px", boxShadow: "8px 0 30px rgba(0,0,0,0.5)", animation: "slideIn 0.2s ease", overflowY: "auto" }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 18 }}>
           <span style={{ fontWeight: 800, fontSize: 18, color: goldLt }}>Categories</span>
           <button onClick={onClose} style={{ background: "none", border: "none", color: ink, cursor: "pointer", padding: 4 }}><X size={20} /></button>
@@ -1245,6 +1318,15 @@ function CategorySidebar({ open, onClose, current, onPick, counts }) {
             );
           })}
         </div>
+
+        {(onAdd || onBulk || onCopy) && <>
+          <div style={{ fontWeight: 800, fontSize: 13, color: goldLt, textTransform: "uppercase", letterSpacing: "0.05em", margin: "22px 0 10px" }}>Actions</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {onAdd && <button style={{ ...S.btn, ...S.btnGold, width: "100%" }} onClick={onAdd}><Plus size={17} /> Add product</button>}
+            {onBulk && <button style={{ ...S.btn, ...S.btnGhost, width: "100%" }} onClick={onBulk}><FileText size={16} /> Bulk add from list</button>}
+            {onCopy && <button style={{ ...S.btn, ...S.btnGhost, width: "100%" }} onClick={onCopy}>{copyLabel}</button>}
+          </div>
+        </>}
       </div>
     </div>
   );
@@ -1259,6 +1341,7 @@ function StockManager({ products, onChange, businessId }) {
   const [search, setSearch] = useState("");
   const [cat, setCat] = useState("All");        // category filter
   const [menuOpen, setMenuOpen] = useState(false);
+  const [more, setMore] = useState(false);
   const [f, setF] = useState({ name: "", price: "", pct: "", packs: "", units: "", pack_size: "1", low: "5", category: "Samah" });
   const [busy, setBusy] = useState(false);
   const [copying, setCopying] = useState(false);
@@ -1324,27 +1407,20 @@ function StockManager({ products, onChange, businessId }) {
     <>
       <CategorySidebar open={menuOpen} onClose={() => setMenuOpen(false)}
         current={cat} onPick={(c) => { setCat(c); setMenuOpen(false); }}
-        counts={{ All: products.length, ...Object.fromEntries(CATEGORIES.map((c) => [c, catCount(c)])) }} />
+        counts={{ All: products.length, ...Object.fromEntries(CATEGORIES.map((c) => [c, catCount(c)])) }}
+        onAdd={() => { setMenuOpen(false); setOpen(true); }}
+        onBulk={() => { setMenuOpen(false); setBulk(true); }}
+        onCopy={products.length > 0 ? () => { setMenuOpen(false); copyToOther(); } : null}
+        copyLabel={copying ? "Copying…" : `Copy to Business ${otherBusiness}`} />
 
       <button onClick={() => setMenuOpen(true)}
         style={{ ...S.btn, ...S.btnGhost, width: "100%", marginBottom: 12, justifyContent: "space-between" }}>
         <span style={{ display: "flex", alignItems: "center", gap: 8 }}><Menu size={18} /> {cat === "All" ? "All products" : cat}</span>
-        <span style={{ color: muted, fontSize: 12 }}>tap to switch ›</span>
+        <span style={{ color: muted, fontSize: 12 }}>menu ›</span>
       </button>
 
-      <button style={{ ...S.btn, ...S.btnDark, width: "100%", marginBottom: 10 }} onClick={() => setOpen(true)}>
-        <Plus size={18} /> Add new product
-      </button>
-      <button style={{ ...S.btn, ...S.btnGhost, width: "100%", marginBottom: 10 }} onClick={() => setBulk(true)}>
-        <FileText size={17} /> Bulk add from a list
-      </button>
-      {products.length > 0 && (
-        <button style={{ ...S.btn, ...S.btnGhost, width: "100%", marginBottom: 14 }} disabled={copying} onClick={copyToOther}>
-          {copying ? "Copying…" : `Copy these products to Business ${otherBusiness}`}
-        </button>
-      )}
       {products.length > 0 && <SearchBar value={search} onChange={setSearch} />}
-      {products.length === 0 && <p style={S.empty}>No products yet. Add your first item above.</p>}
+      {products.length === 0 && <p style={S.empty}>No products yet. Open the menu ≡ and tap “Add product”.</p>}
       {products.length > 0 && shown.length === 0 && <p style={S.empty}>{search ? `No products match “${search}”.` : `No products in ${cat} yet.`}</p>}
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {shown.map((p) => {
@@ -1357,10 +1433,7 @@ function StockManager({ products, onChange, businessId }) {
                 <div style={{ ...S.cardMeta, color: p.qty <= 0 ? "#C0392B" : "#1F9D55", fontWeight: 600 }}>{p.qty <= 0 ? `${p.qty} packs — out of stock` : stockLabel(p)}</div>
               </div>
               <StockEditor product={p} onSet={(v) => setStock(p, v)} />
-              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                <button style={S.editBtn} onClick={() => setEditing(p)}><Pencil size={15} /></button>
-                <button style={S.delBtn} onClick={() => remove(p.id)}><X size={16} /></button>
-              </div>
+              <button style={S.editBtn} onClick={() => setEditing(p)}><Pencil size={15} /></button>
             </div>
           );
         })}
@@ -1369,8 +1442,6 @@ function StockManager({ products, onChange, businessId }) {
         <Modal onClose={() => setOpen(false)} title="New product">
           <Field label="Product name" value={f.name} onChange={(v)=>setF({...f,name:v})} placeholder="e.g. Maputi snack" />
           <Field label="Selling price per pack ($)" value={f.price} onChange={(v)=>setF({...f,price:v})} type="number" placeholder="9.50" />
-          <Field label="Items in a pack (label only, e.g. 20)" value={f.pack_size} onChange={(v)=>setF({...f,pack_size:v})} type="number" placeholder="20" />
-          <Field label="Percentage to God (%)" value={f.pct} onChange={(v)=>setF({...f,pct:v})} type="number" placeholder="10" />
           <label style={S.fieldWrap}>
             <span style={S.fieldLabel}>Category</span>
             <select style={S.input} value={f.category} onChange={(e)=>setF({...f,category:e.target.value})}>
@@ -1378,13 +1449,23 @@ function StockManager({ products, onChange, businessId }) {
             </select>
           </label>
           <Field label="Opening stock (packs)" value={f.packs} onChange={(v)=>setF({...f,packs:v})} type="number" placeholder="0" />
-          <Field label="Warn me when packs drop to" value={f.low} onChange={(v)=>setF({...f,low:v})} type="number" placeholder="5" />
-          <button style={{ ...S.btn, ...S.btnDark, width: "100%", marginTop: 8 }} disabled={busy} onClick={add}>
+
+          <button onClick={() => setMore(!more)}
+            style={{ ...S.btn, ...S.btnGhost, width: "100%", marginTop: 4, justifyContent: "space-between" }}>
+            <span>More options</span><span style={{ color: muted }}>{more ? "▲" : "▼"}</span>
+          </button>
+          {more && <div style={{ marginTop: 8 }}>
+            <Field label="Items in a pack (label only, e.g. 20)" value={f.pack_size} onChange={(v)=>setF({...f,pack_size:v})} type="number" placeholder="20" />
+            <Field label="Percentage to God (%)" value={f.pct} onChange={(v)=>setF({...f,pct:v})} type="number" placeholder="10" />
+            <Field label="Warn me when packs drop to" value={f.low} onChange={(v)=>setF({...f,low:v})} type="number" placeholder="5" />
+          </div>}
+
+          <button style={{ ...S.btn, ...S.btnDark, width: "100%", marginTop: 10 }} disabled={busy} onClick={add}>
             <Check size={18} /> {busy ? "Saving…" : "Save product"}
           </button>
         </Modal>
       )}
-      {editing && <EditProductModal product={editing} onClose={() => setEditing(null)} onSave={saveEdit} />}
+      {editing && <EditProductModal product={editing} onClose={() => setEditing(null)} onSave={saveEdit} onDelete={async () => { await remove(editing.id); setEditing(null); }} />}
       {bulk && <BulkAddModal businessId={businessId} onClose={() => setBulk(false)} onDone={async () => { setBulk(false); await onChange(); }} />}
     </>
   );
@@ -1469,7 +1550,7 @@ function BulkAddModal({ businessId, onClose, onDone }) {
 }
 
 // Edit price, percentage, pack size, name, low-stock level
-function EditProductModal({ product, onClose, onSave }) {
+function EditProductModal({ product, onClose, onSave, onDelete }) {
   const [name, setName] = useState(product.name);
   const [price, setPrice] = useState(String(product.price));
   const [pct, setPct] = useState(String(product.tithe_pct));
@@ -1477,6 +1558,8 @@ function EditProductModal({ product, onClose, onSave }) {
   const [low, setLow] = useState(String(product.low_at));
   const [category, setCategory] = useState(product.category || "Samah");
   const [busy, setBusy] = useState(false);
+  const [confirmDel, setConfirmDel] = useState(false);
+  const [confirmText, setConfirmText] = useState("");
 
   const save = async () => {
     if (!name.trim()) return;
@@ -1509,6 +1592,21 @@ function EditProductModal({ product, onClose, onSave }) {
       <button style={{ ...S.btn, ...S.btnDark, width: "100%", marginTop: 4 }} disabled={busy} onClick={save}>
         <Check size={18} /> {busy ? "Saving…" : "Save changes"}
       </button>
+      {onDelete && <>
+        {!confirmDel ? (
+          <button style={{ ...S.btn, ...S.btnGhost, width: "100%", marginTop: 10, color: "#C0392B" }} onClick={() => setConfirmDel(true)}>
+            Delete this product
+          </button>
+        ) : (
+          <div style={{ border: "1px solid #C0392B", borderRadius: 12, padding: 14, marginTop: 10 }}>
+            <p style={{ ...S.hint, marginTop: 0 }}>Permanently delete <b>{product.name}</b>? Type <b>DELETE</b> to confirm.</p>
+            <input style={S.input} value={confirmText} onChange={(e) => setConfirmText(e.target.value)} placeholder="Type DELETE" />
+            <button style={{ ...S.btn, width: "100%", marginTop: 8, background: "#C0392B", color: "#fff" }}
+              disabled={confirmText !== "DELETE"} onClick={onDelete}>Permanently delete</button>
+            <button style={{ ...S.btn, ...S.btnGhost, width: "100%", marginTop: 8 }} onClick={() => { setConfirmDel(false); setConfirmText(""); }}>Cancel</button>
+          </div>
+        )}
+      </>}
     </Modal>
   );
 }
@@ -1537,9 +1635,14 @@ function Transactions({ sales, products, businessId, onChange, onDeleteSale }) {
   const [prodQ, setProdQ] = useState("");
   const [fromQ, setFromQ] = useState("");
   const [toQ, setToQ] = useState("");
+  const [cat, setCat] = useState("All");
   const [editing, setEditing] = useState(null);
   const [viewing, setViewing] = useState(null);
   const [confirmDel, setConfirmDel] = useState(null);
+
+  // Map product name → category, to filter sales by category
+  const catOf = {};
+  (products || []).forEach((p) => { catOf[p.name] = p.category || "Samah"; });
 
   const inRange = (when) => {
     const d = localDateStr(new Date(when));
@@ -1547,6 +1650,14 @@ function Transactions({ sales, products, businessId, onChange, onDeleteSale }) {
     if (toQ && d > toQ) return false;
     return true;
   };
+  const matchesQ = (inv) => {
+    const q = prodQ.trim().toLowerCase();
+    if (!q) return true;
+    return (inv.invoice_no || "").toLowerCase().includes(q)
+      || (inv.customer || "").toLowerCase().includes(q)
+      || inv.lines.some((l) => (l.product_name || "").toLowerCase().includes(q));
+  };
+  const inCat = (inv) => cat === "All" || inv.lines.some((l) => (catOf[l.product_name] || "Samah") === cat);
 
   // Product summary: total units + total $ for the product search, over the date range
   let prodSummary = null;
@@ -1558,21 +1669,23 @@ function Transactions({ sales, products, businessId, onChange, onDeleteSale }) {
     prodSummary = { units, total, count: matched.length };
   }
 
-  let invoices = groupByInvoice(sales);
-  if (prodQ.trim()) {
-    const q = prodQ.trim().toLowerCase();
-    invoices = invoices.filter((inv) => inv.lines.some((l) => (l.product_name || "").toLowerCase().includes(q)));
-  }
-  invoices = invoices.filter((inv) => inRange(inv.when));
+  let invoices = groupByInvoice(sales).filter((inv) => inRange(inv.when) && matchesQ(inv) && inCat(inv));
 
   return (
     <>
-      <SectionTitle>Find sales by product</SectionTitle>
+      <SectionTitle>Find a sale</SectionTitle>
       <div style={S.searchWrap}>
         <Search size={16} style={{ color: muted, flexShrink: 0 }} />
-        <input style={S.searchInput} value={prodQ} placeholder="Search product (e.g. Cascade)…" onChange={(e) => setProdQ(e.target.value)} />
+        <input style={S.searchInput} value={prodQ} placeholder="Search product, invoice no, or customer…" onChange={(e) => setProdQ(e.target.value)} />
         {prodQ && <button style={S.searchClear} onClick={() => setProdQ("")}><X size={15} /></button>}
       </div>
+      <label style={{ ...S.fieldWrap, marginBottom: 10 }}>
+        <span style={S.fieldLabel}>Category</span>
+        <select style={S.input} value={cat} onChange={(e) => setCat(e.target.value)}>
+          <option value="All">All categories</option>
+          {CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+        </select>
+      </label>
       <div style={{ display: "flex", gap: 10, marginBottom: 14 }}>
         <label style={{ ...S.fieldWrap, flex: 1, marginBottom: 0 }}>
           <span style={S.fieldLabel}>From</span>
@@ -1755,7 +1868,7 @@ function EditInvoiceModal({ invoice, products, onClose, onChange }) {
 }
 
 // Admin reviews seller day-end cash-ups and confirms them
-function CashUps({ businessId }) {
+function CashUps({ businessId, sales = [] }) {
   const [reports, setReports] = useState([]);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState(null);
@@ -1777,7 +1890,6 @@ function CashUps({ businessId }) {
     await load();
   };
   const remove = async (id) => {
-    if (!window.confirm("Delete this cash-up report? This cannot be undone.")) return;
     await sb.del("day_reports", `id=eq.${id}`);
     await load();
   };
@@ -1789,8 +1901,20 @@ function CashUps({ businessId }) {
 
   if (loading) return <Loading />;
 
+  // Who sold today but hasn't submitted a cash-up today?
+  const todayStr = localDateStr(new Date());
+  const soldToday = [...new Set(sales.filter((s) => localDateStr(new Date(s.sold_at)) === todayStr).map((s) => s.seller_name))];
+  const cashedToday = new Set(reports.filter((r) => r.report_date === todayStr).map((r) => r.seller_name));
+  const notDone = soldToday.filter((n) => !cashedToday.has(n));
+
   return (
     <>
+      {notDone.length > 0 && (
+        <div style={{ ...S.alert, background: "rgba(245,166,35,0.15)", color: mango }}>
+          <AlertTriangle size={16} />
+          <span><b>Not cashed up today:</b> {notDone.join(", ")}. They sold today but haven’t submitted a cash-up.</span>
+        </div>
+      )}
       <SectionTitle>Day-end cash-ups</SectionTitle>
       {reports.length === 0 && <p style={S.empty}>No cash-ups submitted yet.</p>}
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
@@ -1813,7 +1937,6 @@ function CashUps({ businessId }) {
                   <div style={S.cardMeta}>{new Date(r.report_date).toLocaleDateString()} · {r.tx_count} sale{r.tx_count === 1 ? "" : "s"}</div>
                 </div>
                 <button style={S.editBtn} onClick={() => setEditing(r)}><Pencil size={15} /></button>
-                <button style={S.delBtn} onClick={() => remove(r.id)}><X size={16} /></button>
               </div>
               <div style={{ display: "flex", gap: 8 }}>
                 <div style={{ ...S.miniStat }}><div style={S.miniLabel}>Sales</div><div style={S.miniVal}>{money(r.sales_total)}</div></div>
@@ -1842,17 +1965,19 @@ function CashUps({ businessId }) {
           );
         })}
       </div>
-      {editing && <EditCashUpModal report={editing} onClose={() => setEditing(null)} onSave={saveEdit} />}
+      {editing && <EditCashUpModal report={editing} onClose={() => setEditing(null)} onSave={saveEdit} onDelete={async () => { await remove(editing.id); setEditing(null); }} />}
     </>
   );
 }
 
 // Admin edits a cash-up's figures
-function EditCashUpModal({ report, onClose, onSave }) {
+function EditCashUpModal({ report, onClose, onSave, onDelete }) {
   const [sales, setSales] = useState(String(report.sales_total));
   const [cash, setCash] = useState(String(report.cash_in_hand));
   const [note, setNote] = useState(report.note || "");
   const [busy, setBusy] = useState(false);
+  const [confirmDel, setConfirmDel] = useState(false);
+  const [confirmText, setConfirmText] = useState("");
 
   const save = async () => {
     setBusy(true);
@@ -1873,7 +1998,129 @@ function EditCashUpModal({ report, onClose, onSave }) {
       <button style={{ ...S.btn, ...S.btnDark, width: "100%", marginTop: 4 }} disabled={busy} onClick={save}>
         <Check size={18} /> {busy ? "Saving…" : "Save changes"}
       </button>
+      {onDelete && <>
+        {!confirmDel ? (
+          <button style={{ ...S.btn, ...S.btnGhost, width: "100%", marginTop: 10, color: "#C0392B" }} onClick={() => setConfirmDel(true)}>
+            Delete this cash-up
+          </button>
+        ) : (
+          <div style={{ border: "1px solid #C0392B", borderRadius: 12, padding: 14, marginTop: 10 }}>
+            <p style={{ ...S.hint, marginTop: 0 }}>Permanently delete this cash-up? Type <b>DELETE</b> to confirm.</p>
+            <input style={S.input} value={confirmText} onChange={(e) => setConfirmText(e.target.value)} placeholder="Type DELETE" />
+            <button style={{ ...S.btn, width: "100%", marginTop: 8, background: "#C0392B", color: "#fff" }}
+              disabled={confirmText !== "DELETE"} onClick={onDelete}>Permanently delete</button>
+            <button style={{ ...S.btn, ...S.btnGhost, width: "100%", marginTop: 8 }} onClick={() => { setConfirmDel(false); setConfirmText(""); }}>Cancel</button>
+          </div>
+        )}
+      </>}
     </Modal>
+  );
+}
+
+// Procurement / reorder list — suggests quantities from last 7 days of sales
+function OrderList({ products, sales, businessName }) {
+  const [qtys, setQtys] = useState({});   // productId -> adjusted order qty
+  const [copied, setCopied] = useState(false);
+
+  // Sales in the last 7 days, per product name
+  const weekAgo = Date.now() - 7 * 86400000;
+  const soldLastWeek = {};
+  sales.forEach((s) => {
+    if (new Date(s.sold_at).getTime() >= weekAgo) {
+      soldLastWeek[s.product_name] = (soldLastWeek[s.product_name] || 0) + Number(s.qty);
+    }
+  });
+
+  // Items at or below their low level
+  const items = products
+    .filter((p) => p.qty <= p.low_at)
+    .map((p) => {
+      const sold = soldLastWeek[p.name] || 0;
+      // cover next week: order enough to replace what sold, minus what's left
+      const suggested = Math.max(0, Math.ceil(sold - Math.max(0, p.qty)));
+      // if nothing sold but it's out, suggest at least topping to the low level
+      const fallback = p.qty <= 0 ? Math.max(1, p.low_at) : 0;
+      const propose = suggested > 0 ? suggested : fallback;
+      return { p, sold, propose };
+    })
+    .sort((a, b) => (a.p.category || "").localeCompare(b.p.category || "") || a.p.name.localeCompare(b.p.name));
+
+  const orderQty = (it) => (qtys[it.p.id] !== undefined ? qtys[it.p.id] : it.propose);
+  const setQty = (id, v) => setQtys((prev) => ({ ...prev, [id]: Math.max(0, parseInt(v) || 0) }));
+
+  const toOrder = items.filter((it) => orderQty(it) > 0);
+
+  const orderText = () => {
+    const byCat = {};
+    toOrder.forEach((it) => {
+      const c = it.p.category || "Samah";
+      byCat[c] = byCat[c] || [];
+      byCat[c].push(`  ${it.p.name}: ${orderQty(it)}${it.p.pack_size > 1 ? ` (pack of ${it.p.pack_size})` : ""}`);
+    });
+    let out = `${businessName} — Order list\n${new Date().toLocaleDateString()}\n`;
+    Object.entries(byCat).forEach(([c, lines]) => { out += `\n${c}:\n${lines.join("\n")}`; });
+    return out;
+  };
+
+  const shareText = async () => {
+    const t = orderText();
+    try {
+      if (navigator.share) await navigator.share({ title: "Order list", text: t });
+      else { await navigator.clipboard.writeText(t); setCopied(true); setTimeout(() => setCopied(false), 1600); }
+    } catch {}
+  };
+  const pdf = () => {
+    const w = window.open("", "_blank");
+    if (!w) { alert("Please allow pop-ups to save the PDF."); return; }
+    const byCat = {};
+    toOrder.forEach((it) => { const c = it.p.category || "Samah"; (byCat[c] = byCat[c] || []).push(it); });
+    let body = "";
+    Object.entries(byCat).forEach(([c, list]) => {
+      body += `<h3>${c}</h3><table>`;
+      list.forEach((it) => { body += `<tr><td>${it.p.name}${it.p.pack_size > 1 ? ` <span style="color:#888">(pack of ${it.p.pack_size})</span>` : ""}</td><td style="text-align:right">${orderQty(it)}</td></tr>`; });
+      body += `</table>`;
+    });
+    w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Order list</title>
+      <style>body{font-family:Arial;max-width:460px;margin:24px auto;padding:0 16px;color:#152019}
+      h1{font-size:22px;text-align:center;margin:0}.meta{text-align:center;color:#666;font-size:13px;margin-bottom:12px}
+      h3{margin:16px 0 4px;color:#1F9D55}table{width:100%;border-collapse:collapse;font-size:14px}
+      td{padding:5px 0;border-bottom:1px solid #eee}</style></head><body>
+      <h1>${businessName}</h1><div class="meta">Order list · ${new Date().toLocaleDateString()}</div>
+      ${body || "<p>Nothing to order.</p>"}
+      <script>window.onload=function(){window.print();}</script></body></html>`);
+    w.document.close();
+  };
+
+  return (
+    <>
+      <SectionTitle>Order list (for Harare)</SectionTitle>
+      <p style={S.hint}>Shows items at or below their low-stock level. Suggested amounts are based on what sold in the last 7 days — adjust any number, then share.</p>
+
+      {items.length === 0 && <p style={S.empty}>Nothing is low right now. 🎉</p>}
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {items.map((it) => (
+          <div key={it.p.id} style={S.card}>
+            <div style={{ flex: 1 }}>
+              <div style={S.cardName}>{it.p.name} <span style={{ ...S.cardMeta, color: goldLt }}>{it.p.category}</span></div>
+              <div style={S.cardMeta}>sold {it.sold} last week · {it.p.qty} left → suggest {it.propose}</div>
+            </div>
+            <input style={{ ...S.input, width: 70, textAlign: "center", fontWeight: 800 }} type="number"
+              value={orderQty(it)} onChange={(e) => setQty(it.p.id, e.target.value)} />
+          </div>
+        ))}
+      </div>
+
+      {toOrder.length > 0 && (
+        <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
+          <button style={{ ...S.btn, ...S.btnDark, flex: 1 }} onClick={shareText}>
+            <Send size={16} /> {copied ? "✓ Copied" : "Share (text)"}
+          </button>
+          <button style={{ ...S.btn, ...S.btnGold, flex: 1 }} onClick={pdf}>
+            <FileText size={16} /> PDF
+          </button>
+        </div>
+      )}
+    </>
   );
 }
 
@@ -1881,6 +2128,8 @@ function EditCashUpModal({ report, onClose, onSave }) {
 function Customers({ sales }) {
   const [q, setQ] = useState("");
   const [copied, setCopied] = useState("");
+  const [menuFor, setMenuFor] = useState(null);   // customer name whose menu is open
+  const [salesFor, setSalesFor] = useState(null);  // customer whose sales we're viewing
 
   // unique customers with phone, purchase count, last seen, total spent
   const map = {};
@@ -1926,22 +2175,51 @@ function Customers({ sales }) {
       {list.length === 0 && <p style={S.empty}>No customers yet. They’re added automatically when a sale records a name.</p>}
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {list.map((c) => (
-          <div key={c.name} style={S.card}>
-            <div style={{ flex: 1 }}>
-              <div style={S.cardName}>{c.name}</div>
-              <div style={S.cardMeta}>
-                {c.phone || "no number"} · {c.count} purchase{c.count === 1 ? "" : "s"} · {money(c.total)}
+          <div key={c.name} style={{ ...S.card, flexDirection: "column", alignItems: "stretch", gap: 8 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <div style={{ flex: 1 }}>
+                <div style={S.cardName}>{c.name}</div>
+                <div style={S.cardMeta}>
+                  {c.phone || "no number"} · {c.count} purchase{c.count === 1 ? "" : "s"} · {money(c.total)}
+                </div>
               </div>
+              <button style={{ background: "none", border: "none", color: ink, cursor: "pointer", fontSize: 22, padding: "0 6px", fontWeight: 800 }}
+                onClick={() => setMenuFor(menuFor === c.name ? null : c.name)}>⋯</button>
             </div>
-            {c.phone && (
-              <button style={{ ...S.btn, ...S.btnGhost, padding: "8px 12px" }} onClick={() => copy(c.phone, c.name)}>
-                {copied === c.name ? "✓" : "Copy"}
-              </button>
+            {menuFor === c.name && (
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                {c.phone && <button style={{ ...S.btn, ...S.btnGhost, flex: 1, padding: "9px 0" }} onClick={() => { copy(c.phone, c.name); }}>{copied === c.name ? "✓ Copied" : "Copy number"}</button>}
+                {c.phone && <a href={`tel:${c.phone.replace(/[^\d+]/g, "")}`} style={{ ...S.btn, ...S.btnGhost, flex: 1, padding: "9px 0", textDecoration: "none", textAlign: "center" }}>Call</a>}
+                <button style={{ ...S.btn, ...S.btnDark, flex: 1, padding: "9px 0" }} onClick={() => { setSalesFor(c); setMenuFor(null); }}>See sales</button>
+              </div>
             )}
           </div>
         ))}
       </div>
+      {salesFor && <CustomerSalesModal customer={salesFor} sales={sales.filter((s) => (s.customer_name || "").trim() === salesFor.name)} onClose={() => setSalesFor(null)} />}
     </>
+  );
+}
+
+// View a single customer's purchase history
+function CustomerSalesModal({ customer, sales, onClose }) {
+  const invoices = groupByInvoice(sales);
+  return (
+    <Modal onClose={onClose} title={customer.name}>
+      <div style={{ ...S.cardMeta, marginBottom: 10 }}>{customer.phone || "no number"} · {money(customer.total)} total</div>
+      {invoices.length === 0 && <p style={S.empty}>No sales found.</p>}
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        {invoices.map((inv) => (
+          <div key={inv.key} style={S.saleRow}>
+            <div style={{ flex: 1 }}>
+              <div style={S.saleName}>{inv.invoice_no || "—"}</div>
+              <div style={S.cardMeta}>{new Date(inv.when).toLocaleDateString()} · {inv.lines.length} item{inv.lines.length > 1 ? "s" : ""}</div>
+            </div>
+            <div style={S.saleName}>{money(inv.total)}</div>
+          </div>
+        ))}
+      </div>
+    </Modal>
   );
 }
 
@@ -1956,6 +2234,8 @@ function Compare({ sales }) {
   const [aTo, setATo] = useState(today);
   const [bFrom, setBFrom] = useState(twoWeek);
   const [bTo, setBTo] = useState(eightDays);
+  // Only compute after the user taps Filter (so selecting dates doesn't jump early)
+  const [applied, setApplied] = useState(null);
 
   const stats = (from, to) => {
     const rows = sales.filter((s) => {
@@ -1968,9 +2248,6 @@ function Compare({ sales }) {
     const customers = new Set(rows.map((s) => (s.customer_name || "").trim().toLowerCase()).filter(Boolean));
     return { total, god, tx: invoices.size, customers: customers.size, rows };
   };
-
-  const A = stats(aFrom, aTo);
-  const B = stats(bFrom, bTo);
 
   const Row = ({ label, a, b, fmt }) => {
     const diff = a - b;
@@ -1987,25 +2264,23 @@ function Compare({ sales }) {
     );
   };
 
-  // per-customer activity for Period A
-  const custMap = {};
-  A.rows.forEach((s) => {
-    const n = (s.customer_name || "").trim();
-    if (!n) return;
-    if (!custMap[n]) custMap[n] = { name: n, total: 0, count: 0 };
-    custMap[n].total += Number(s.total); custMap[n].count += 1;
-  });
-  const topCustomers = Object.values(custMap).sort((a, b) => b.total - a.total).slice(0, 10);
-
-  // week-by-week trend (last 6 weeks)
+  // Week-by-week trend, weeks running Tuesday → Monday (last 6 weeks)
+  // Find the most recent Tuesday (start of the current business week).
+  const now = new Date();
+  const dow = now.getDay();               // 0=Sun..6=Sat; Tuesday=2
+  const daysSinceTue = (dow - 2 + 7) % 7;
+  const thisTue = new Date(now); thisTue.setDate(now.getDate() - daysSinceTue);
   const weeks = [];
   for (let i = 5; i >= 0; i--) {
-    const end = new Date(Date.now() - i * 7 * 86400000);
-    const start = new Date(end.getTime() - 6 * 86400000);
+    const start = new Date(thisTue); start.setDate(thisTue.getDate() - i * 7);
+    const end = new Date(start); end.setDate(start.getDate() + 6);   // Monday
     const st = stats(localDateStr(start), localDateStr(end));
-    weeks.push({ label: `${localDateStr(start).slice(5)}–${localDateStr(end).slice(5)}`, total: st.total, god: st.god, tx: st.tx });
+    weeks.push({ label: `${localDateStr(start).slice(5)}–${localDateStr(end).slice(5)}`, total: st.total });
   }
   const maxWeek = Math.max(...weeks.map((w) => w.total), 1);
+
+  const A = applied ? stats(applied.aFrom, applied.aTo) : null;
+  const B = applied ? stats(applied.bFrom, applied.bTo) : null;
 
   return (
     <>
@@ -2022,21 +2297,29 @@ function Compare({ sales }) {
           <input style={S.input} type="date" value={bTo} onChange={(e) => setBTo(e.target.value)} />
         </div>
       </div>
+      <button style={{ ...S.btn, ...S.btnGold, width: "100%", marginBottom: 14 }}
+        onClick={() => setApplied({ aFrom, aTo, bFrom, bTo })}>
+        <Search size={17} /> Filter &amp; compare
+      </button>
 
-      <div style={{ ...S.card, flexDirection: "column", alignItems: "stretch" }}>
-        <div style={{ display: "flex", fontSize: 11, color: muted, fontWeight: 700, textTransform: "uppercase" }}>
-          <div style={{ flex: 1 }}></div>
-          <div style={{ width: 90, textAlign: "right" }}>A</div>
-          <div style={{ width: 90, textAlign: "right" }}>B</div>
-          <div style={{ width: 70, textAlign: "right" }}>Diff</div>
+      {!applied && <p style={S.empty}>Pick your two date ranges, then tap “Filter &amp; compare”.</p>}
+
+      {applied && (
+        <div style={{ ...S.card, flexDirection: "column", alignItems: "stretch" }}>
+          <div style={{ display: "flex", fontSize: 11, color: muted, fontWeight: 700, textTransform: "uppercase" }}>
+            <div style={{ flex: 1 }}></div>
+            <div style={{ width: 90, textAlign: "right" }}>A</div>
+            <div style={{ width: 90, textAlign: "right" }}>B</div>
+            <div style={{ width: 70, textAlign: "right" }}>Diff</div>
+          </div>
+          <Row label="Total sales" a={A.total} b={B.total} fmt={money} />
+          <Row label="To God" a={A.god} b={B.god} fmt={money} />
+          <Row label="Transactions" a={A.tx} b={B.tx} fmt={(n) => String(Math.round(n))} />
+          <Row label="Customers" a={A.customers} b={B.customers} fmt={(n) => String(Math.round(n))} />
         </div>
-        <Row label="Total sales" a={A.total} b={B.total} fmt={money} />
-        <Row label="To God" a={A.god} b={B.god} fmt={money} />
-        <Row label="Transactions" a={A.tx} b={B.tx} fmt={(n) => String(Math.round(n))} />
-        <Row label="Customers" a={A.customers} b={B.customers} fmt={(n) => String(Math.round(n))} />
-      </div>
+      )}
 
-      <SectionTitle>Week-by-week (last 6 weeks)</SectionTitle>
+      <SectionTitle>Week-by-week (Tue–Mon, last 6 weeks)</SectionTitle>
       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
         {weeks.map((w, i) => (
           <div key={i} style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -2048,52 +2331,81 @@ function Compare({ sales }) {
           </div>
         ))}
       </div>
-
-      <SectionTitle>Top customers (Period A)</SectionTitle>
-      {topCustomers.length === 0 && <p style={S.empty}>No named customers in Period A.</p>}
-      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-        {topCustomers.map((c) => (
-          <div key={c.name} style={S.saleRow}>
-            <div style={{ flex: 1 }}>
-              <div style={S.saleName}>{c.name}</div>
-              <div style={S.cardMeta}>{c.count} purchase{c.count === 1 ? "" : "s"}</div>
-            </div>
-            <div style={S.saleName}>{money(c.total)}</div>
-          </div>
-        ))}
-      </div>
     </>
   );
 }
 
-function Report({ sales, totalSales, totalTithe, cash, low }) {
+function Report({ sales, products, low }) {
+  // Week runs Tuesday → Monday. Let the admin step back through weeks.
+  const [weekOffset, setWeekOffset] = useState(0);   // 0 = current week
+  const [cat, setCat] = useState("All");
+
+  const catOf = {};
+  (products || []).forEach((p) => { catOf[p.name] = p.category || "Samah"; });
+
+  const now = new Date();
+  const dow = now.getDay();
+  const daysSinceTue = (dow - 2 + 7) % 7;
+  const weekStart = new Date(now); weekStart.setHours(0,0,0,0);
+  weekStart.setDate(now.getDate() - daysSinceTue - weekOffset * 7); // Tuesday
+  const weekEnd = new Date(weekStart); weekEnd.setDate(weekStart.getDate() + 6); // Monday
+  const startStr = localDateStr(weekStart), endStr = localDateStr(weekEnd);
+
+  const inWeek = (s) => {
+    const d = localDateStr(new Date(s.sold_at));
+    return d >= startStr && d <= endStr;
+  };
+  const inCat = (s) => cat === "All" || (catOf[s.product_name] || "Samah") === cat;
+  const rows = sales.filter((s) => inWeek(s) && inCat(s));
+
+  const totalSales = rows.reduce((a, s) => a + Number(s.total), 0);
+  const totalTithe = rows.reduce((a, s) => a + Number(s.tithe), 0);
+  const cash = totalSales - totalTithe;
+
   const byProduct = {};
-  sales.forEach((s) => {
+  rows.forEach((s) => {
     const k = s.product_name;
     byProduct[k] = byProduct[k] || { qty: 0, total: 0, tithe: 0 };
-    byProduct[k].qty += s.qty;
+    byProduct[k].qty += Number(s.qty);
     byProduct[k].total += Number(s.total);
     byProduct[k].tithe += Number(s.tithe);
   });
+
   return (
     <>
       <div style={S.reportHead}>
         <FileText size={18} />
         <div>
-          <div style={{ ...S.cardName, color: "#fff" }}>Weekly report</div>
-          <div style={{ ...S.cardMeta, color: "rgba(255,255,255,0.7)" }}>Generated {new Date().toLocaleDateString()}</div>
+          <div style={{ ...S.cardName, color: "#fff" }}>{cat === "All" ? "Weekly report" : `${cat} — weekly`}</div>
+          <div style={{ ...S.cardMeta, color: "rgba(255,255,255,0.8)" }}>
+            {weekStart.toLocaleDateString()} (Tue) → {weekEnd.toLocaleDateString()} (Mon)
+          </div>
         </div>
       </div>
-      <div style={S.statGrid}>
-        <Stat icon={<TrendingUp size={16} />} label="Total sales" value={money(totalSales)} accent delay={0} />
-        <Stat icon={<Wallet size={16} />} label="Cash in hand" value={money(cash)} tint={mango} delay={0.05} />
-        <Stat icon={<Church size={16} />} label="Owed to God" value={money(totalTithe)} tint={grape} delay={0.1} />
-        <Stat icon={<Package size={16} />} label="Units sold" value={Object.values(byProduct).reduce((a,p)=>a+p.qty,0)} tint={sky} delay={0.15} />
+
+      <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+        <button style={{ ...S.btn, ...S.btnGhost, flex: 1 }} onClick={() => setWeekOffset(weekOffset + 1)}>‹ Previous</button>
+        <button style={{ ...S.btn, ...S.btnGhost, flex: 1 }} disabled={weekOffset === 0} onClick={() => setWeekOffset(Math.max(0, weekOffset - 1))}>Next ›</button>
       </div>
+      <label style={{ ...S.fieldWrap, marginBottom: 12 }}>
+        <span style={S.fieldLabel}>Company / category</span>
+        <select style={S.input} value={cat} onChange={(e) => setCat(e.target.value)}>
+          <option value="All">All companies</option>
+          {CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+        </select>
+      </label>
+
+      <div style={S.statGrid}>
+        <Stat icon={<TrendingUp size={16} />} label="Week sales" value={money(totalSales)} accent delay={0} />
+        <Stat icon={<Wallet size={16} />} label="Cash (sales − God)" value={money(cash)} tint={mango} delay={0.05} />
+        <Stat icon={<Church size={16} />} label="To God" value={money(totalTithe)} tint={grape} delay={0.1} />
+        <Stat icon={<Package size={16} />} label="Packs sold" value={Object.values(byProduct).reduce((a,p)=>a+p.qty,0)} tint={sky} delay={0.15} />
+      </div>
+
       <SectionTitle>By product</SectionTitle>
-      {Object.keys(byProduct).length === 0 && <p style={S.empty}>No sales recorded yet.</p>}
+      {Object.keys(byProduct).length === 0 && <p style={S.empty}>No sales for this week{cat !== "All" ? ` in ${cat}` : ""}.</p>}
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        {Object.entries(byProduct).map(([name, d]) => (
+        {Object.entries(byProduct).sort((a,b)=>b[1].total-a[1].total).map(([name, d]) => (
           <div key={name} style={S.card}>
             <div style={{ flex: 1 }}>
               <div style={S.cardName}>{name}</div>
@@ -2106,7 +2418,7 @@ function Report({ sales, totalSales, totalTithe, cash, low }) {
         <SectionTitle>Reorder these</SectionTitle>
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           {low.map((p) => (
-            <div key={p.id} style={{ ...S.card, borderColor: "#E8B4A0" }}>
+            <div key={p.id} style={S.card}>
               <div style={{ flex: 1 }}>
                 <div style={S.cardName}>{p.name}</div>
                 <div style={S.cardMeta}>Only {p.qty} left</div>
@@ -2129,7 +2441,7 @@ function TeamManager({ onChange, businessId }) {
   const [busy, setBusy] = useState(false);
 
   const load = useCallback(async () => {
-    try { setMembers(await sb.select("members", `business_id=eq.${businessId}&select=id,name,role&order=created_at.asc`)); } catch {}
+    try { setMembers(await sb.select("members", `business_id=eq.${businessId}&select=id,name,role,created_at&order=created_at.asc`)); } catch {}
   }, [businessId]);
   useEffect(() => { load(); }, [load]);
 
@@ -2143,6 +2455,7 @@ function TeamManager({ onChange, businessId }) {
     setBusy(false);
   };
   const remove = async (id) => { await sb.del("members", `id=eq.${id}`); await load(); };
+  const [viewing, setViewing] = useState(null);
 
   return (
     <>
@@ -2157,18 +2470,86 @@ function TeamManager({ onChange, businessId }) {
         <Plus size={18} /> {busy ? "Saving…" : "Add salesperson"}
       </button>
       <SectionTitle>Team</SectionTitle>
+      <p style={S.hint}>Tap a person to see their details or reset their PIN.</p>
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {members.map((m) => (
-          <div key={m.id} style={S.card}>
+          <button key={m.id} onClick={() => setViewing(m)}
+            style={{ ...S.card, width: "100%", textAlign: "left", cursor: "pointer" }}>
             <div style={{ flex: 1 }}>
               <div style={S.cardName}>{m.name}</div>
-              <div style={S.cardMeta}>{m.role}</div>
+              <div style={S.cardMeta}>{m.role}{m.created_at ? ` · since ${new Date(m.created_at).toLocaleDateString()}` : ""}</div>
             </div>
-            {m.role !== "admin" && <button style={S.delBtn} onClick={() => remove(m.id)}><X size={16} /></button>}
-          </div>
+            <ChevronRight size={18} style={{ color: muted }} />
+          </button>
         ))}
       </div>
+      {viewing && (
+        <MemberDetail member={viewing} businessId={businessId}
+          onClose={() => setViewing(null)}
+          onChanged={async () => { await load(); }}
+          onRemoved={async () => { setViewing(null); await load(); }} />
+      )}
     </>
+  );
+}
+
+// Employee detail: info, reset PIN, protected delete
+function MemberDetail({ member, businessId, onClose, onChanged, onRemoved }) {
+  const [newPin, setNewPin] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [confirmDel, setConfirmDel] = useState(false);
+  const [confirmText, setConfirmText] = useState("");
+
+  const resetPin = async () => {
+    if (newPin.length !== 4) { alert("PIN must be 4 digits."); return; }
+    setBusy(true);
+    try {
+      await sb.rpc("upsert_member", { p_name: member.name, p_pin: newPin, p_role: member.role, p_business_id: businessId });
+      setNewPin(""); alert("PIN updated."); await onChanged();
+    } catch (e) { alert(e.message); }
+    setBusy(false);
+  };
+  const doDelete = async () => {
+    setBusy(true);
+    try { await sb.del("members", `id=eq.${member.id}`); await onRemoved(); }
+    catch (e) { alert(e.message); }
+    setBusy(false);
+  };
+
+  return (
+    <Modal onClose={onClose} title={member.name}>
+      <div style={S.cardMeta}>Role: <b style={{ color: ink }}>{member.role}</b></div>
+      <div style={{ ...S.cardMeta, marginBottom: 14 }}>
+        Employed: <b style={{ color: ink }}>{member.created_at ? new Date(member.created_at).toLocaleDateString() : "unknown"}</b>
+      </div>
+
+      <SectionTitle>Reset PIN</SectionTitle>
+      <p style={S.hint}>For security, the current PIN can’t be shown — but you can set a new one.</p>
+      <div style={{ display: "flex", gap: 8 }}>
+        <input style={{ ...S.input, flex: 1 }} value={newPin} inputMode="numeric" placeholder="New 4-digit PIN"
+          onChange={(e) => setNewPin(e.target.value.replace(/\D/g, "").slice(0, 4))} />
+        <button style={{ ...S.btn, ...S.btnDark }} disabled={busy || newPin.length !== 4} onClick={resetPin}>Set</button>
+      </div>
+
+      {member.role !== "admin" && <>
+        <SectionTitle>Remove from team</SectionTitle>
+        {!confirmDel ? (
+          <button style={{ ...S.btn, ...S.btnGhost, width: "100%", color: "#C0392B" }} onClick={() => setConfirmDel(true)}>
+            Remove {member.name}
+          </button>
+        ) : (
+          <div style={{ border: `1px solid #C0392B`, borderRadius: 12, padding: 14 }}>
+            <p style={{ ...S.hint, marginTop: 0 }}>This permanently removes {member.name}. Type <b>DELETE</b> to confirm.</p>
+            <input style={S.input} value={confirmText} onChange={(e) => setConfirmText(e.target.value)} placeholder="Type DELETE" />
+            <button style={{ ...S.btn, width: "100%", marginTop: 8, background: "#C0392B", color: "#fff" }}
+              disabled={busy || confirmText !== "DELETE"} onClick={doDelete}>
+              Permanently remove
+            </button>
+            <button style={{ ...S.btn, ...S.btnGhost, width: "100%", marginTop: 8 }} onClick={() => { setConfirmDel(false); setConfirmText(""); }}>Cancel</button>
+          </div>
+        )}
+      </>}
+    </Modal>
   );
 }
 
