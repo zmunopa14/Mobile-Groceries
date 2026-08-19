@@ -467,7 +467,7 @@ function Admin({ user, onExit, businessName }) {
           {tab === "compare" && <Compare sales={sales} />}
           {tab === "cashups" && <CashUps businessId={user.business_id} sales={sales} />}
           {tab === "report" && <Report sales={sales} products={products} low={[...out, ...low]} cats={cats} />}
-          {tab === "team" && <TeamManager onChange={refresh} businessId={user.business_id} />}
+          {tab === "team" && <TeamManager onChange={refresh} businessId={user.business_id} sales={sales} />}
         </>}
       </div>
     </div>
@@ -1788,6 +1788,7 @@ function Transactions({ sales, products, businessId, onChange, onDeleteSale, cat
   const [anaDay, setAnaDay] = useState(localDateStr(new Date()));
   const [drillCat, setDrillCat] = useState(null);     // category tapped
   const [drillSeller, setDrillSeller] = useState(null); // seller tapped within category
+  const [showFind, setShowFind] = useState(false);
 
   // Map product name → category
   const catOf = {};
@@ -1813,10 +1814,20 @@ function Transactions({ sales, products, businessId, onChange, onDeleteSale, cat
     });
   }
 
-  // Level 3: the actual invoices for that category + seller
-  const drillInvoices = (drillCat && drillSeller)
-    ? groupByInvoice(daySales.filter((s) => catFor(s) === drillCat && s.seller_name === drillSeller))
-    : [];
+  // Level 3: per-product summary for that category + seller (line-level, so only
+  // this category's products — never other products from the same invoice)
+  const drillProducts = (() => {
+    if (!drillCat || !drillSeller) return [];
+    const rows = daySales.filter((s) => catFor(s) === drillCat && s.seller_name === drillSeller);
+    const byP = {};
+    rows.forEach((s) => {
+      byP[s.product_name] = byP[s.product_name] || { qty: 0, total: 0 };
+      byP[s.product_name].qty += Number(s.qty);
+      byP[s.product_name].total += Number(s.total);
+    });
+    return Object.entries(byP).sort((a, b) => b[1].total - a[1].total);
+  })();
+  const drillSellerTotal = drillProducts.reduce((a, [, d]) => a + d.total, 0);
 
   const inRange = (when) => {
     const d = localDateStr(new Date(when));
@@ -1902,31 +1913,32 @@ function Transactions({ sales, products, businessId, onChange, onDeleteSale, cat
         </div>
       </>}
 
-      {/* Level 3: the actual sales */}
+      {/* Level 3: per-product summary (only this category's products) */}
       {drillCat && drillSeller && <>
         <div style={{ ...S.cartTotalRow, marginBottom: 10 }}>
-          <span>{drillSeller} · {drillCat}</span><span>{money(sellerTotals[drillSeller] || 0)}</span>
+          <span>{drillSeller} · {drillCat}</span><span>{money(drillSellerTotal)}</span>
         </div>
+        {drillProducts.length === 0 && <p style={S.empty}>No {drillCat} sales for {drillSeller} on this day.</p>}
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {drillInvoices.map((inv) => (
-            <button key={inv.key} style={{ ...S.card, width: "100%", cursor: "pointer", textAlign: "left" }} onClick={() => setViewing(inv)}>
+          {drillProducts.map(([name, d]) => (
+            <div key={name} style={S.card}>
               <div style={{ flex: 1 }}>
-                <div style={S.cardName}>{inv.customer || "No name"} {inv.invoice_no && <span style={S.invTag}>{inv.invoice_no}</span>}</div>
-                <div style={S.cardMeta}>{new Date(inv.when).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} · {inv.lines.length} item{inv.lines.length > 1 ? "s" : ""}</div>
+                <div style={S.cardName}>{name}</div>
+                <div style={S.cardMeta}>{d.qty} sold</div>
               </div>
-              <div style={S.saleName}>{money(inv.total)}</div>
-            </button>
+              <div style={S.saleName}>{money(d.total)}</div>
+            </div>
           ))}
         </div>
       </>}
 
       <div style={{ height: 1, background: line, margin: "22px 0" }} />
 
-      <SellerCompare sales={sales} />
-
-      <div style={{ height: 1, background: line, margin: "22px 0" }} />
-
-      <SectionTitle>Find a sale</SectionTitle>
+      <button style={{ ...S.btn, ...S.btnGhost, width: "100%", justifyContent: "space-between" }} onClick={() => setShowFind(!showFind)}>
+        <span style={{ display: "flex", alignItems: "center", gap: 8 }}><Search size={16} /> Find a specific sale</span>
+        <span style={{ color: muted }}>{showFind ? "▲" : "▼"}</span>
+      </button>
+      {showFind && <div style={{ marginTop: 12 }}>
       <div style={S.searchWrap}>
         <Search size={16} style={{ color: muted, flexShrink: 0 }} />
         <input style={S.searchInput} value={prodQ} placeholder="Search product, invoice no, or customer…" onChange={(e) => setProdQ(e.target.value)} />
@@ -1996,6 +2008,7 @@ function Transactions({ sales, products, businessId, onChange, onDeleteSale, cat
           </div>
         ))}
       </div>
+      </div>}
 
       {editing && (
         <EditInvoiceModal invoice={editing} products={products}
@@ -2725,7 +2738,7 @@ function Report({ sales, products, low, cats = [] }) {
 // ============================================================
 // 9. TEAM MANAGER (admin) — create salespeople with a PIN
 // ============================================================
-function TeamManager({ onChange, businessId }) {
+function TeamManager({ onChange, businessId, sales = [] }) {
   const [members, setMembers] = useState([]);
   const [name, setName] = useState("");
   const [pin, setPin] = useState("");
@@ -2780,6 +2793,9 @@ function TeamManager({ onChange, businessId }) {
           onChanged={async () => { await load(); }}
           onRemoved={async () => { setViewing(null); await load(); }} />
       )}
+
+      <div style={{ height: 1, background: line, margin: "24px 0" }} />
+      <SellerCompare sales={sales} />
     </>
   );
 }
