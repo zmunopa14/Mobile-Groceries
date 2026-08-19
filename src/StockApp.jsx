@@ -1457,9 +1457,9 @@ function StockManager({ products, onChange, businessId, cats = [], onCatsChange 
     await onChange();
   };
 
-  const byCat = cat === "All" ? products : products.filter((p) => (p.category || "Samah") === cat);
+  const byCat = cat === "All" ? products : products.filter((p) => (p.category || "Uncategorised") === cat);
   const shown = filterProducts(byCat, search);
-  const catCount = (c) => products.filter((p) => (p.category || "Samah") === c).length;
+  const catCount = (c) => products.filter((p) => (p.category || "Uncategorised") === c).length;
 
   return (
     <>
@@ -1487,7 +1487,7 @@ function StockManager({ products, onChange, businessId, cats = [], onCatsChange 
             <div key={p.id} style={S.card}>
               <div style={{ flex: 1 }}>
                 <div style={S.cardName}>{p.name} {p.qty <= 0 ? <span style={S.outTag}>out — restock</span> : p.qty <= p.low_at ? <span style={S.lowTag}>low</span> : null}</div>
-                <div style={S.cardMeta}>{priceFmt(p.price)}/pack · {p.tithe_pct}% to God{ps > 1 ? ` · pack of ${ps}` : ""} · <span style={{ color: goldLt }}>{p.category || "Samah"}</span></div>
+                <div style={S.cardMeta}>{priceFmt(p.price)}/pack · {p.tithe_pct}% to God{ps > 1 ? ` · pack of ${ps}` : ""}{p.category ? <> · <span style={{ color: goldLt }}>{p.category}</span></> : ""}</div>
                 <div style={{ ...S.cardMeta, color: p.qty <= 0 ? "#C0392B" : "#1F9D55", fontWeight: 600 }}>{p.qty <= 0 ? `${p.qty} packs — out of stock` : stockLabel(p)}</div>
               </div>
               <StockEditor product={p} onSet={(v) => setStock(p, v)} />
@@ -1553,7 +1553,7 @@ function BulkAddModal({ businessId, onClose, onDone }) {
         qty: parseFloat(it.qty) || 0,
         pack_size: parseInt(it.pack_size) || 1,
         low_at: 5,
-        category: "Samah",
+        category: "",
         business_id: businessId,
       }));
       await sb.insert("products", rows);
@@ -1616,7 +1616,7 @@ function EditProductModal({ product, cats = [], onClose, onSave, onDelete }) {
   const [pct, setPct] = useState(String(product.tithe_pct));
   const [packSize, setPackSize] = useState(String(product.pack_size || 1));
   const [low, setLow] = useState(String(product.low_at));
-  const [category, setCategory] = useState(product.category || "Samah");
+  const [category, setCategory] = useState(product.category || "Uncategorised");
   const [busy, setBusy] = useState(false);
   const [confirmDel, setConfirmDel] = useState(false);
   const [confirmText, setConfirmText] = useState("");
@@ -1791,8 +1791,8 @@ function Transactions({ sales, products, businessId, onChange, onDeleteSale, cat
 
   // Map product name → category
   const catOf = {};
-  (products || []).forEach((p) => { catOf[p.name] = p.category || "Samah"; });
-  const catFor = (s) => catOf[s.product_name] || "Samah";
+  (products || []).forEach((p) => { catOf[p.name] = p.category || "Uncategorised"; });
+  const catFor = (s) => catOf[s.product_name] || "Uncategorised";
 
   // Sales for the chosen analysis day
   const daySales = sales.filter((s) => localDateStr(new Date(s.sold_at)) === anaDay);
@@ -1831,7 +1831,7 @@ function Transactions({ sales, products, businessId, onChange, onDeleteSale, cat
       || (inv.customer || "").toLowerCase().includes(q)
       || inv.lines.some((l) => (l.product_name || "").toLowerCase().includes(q));
   };
-  const inCat = (inv) => cat === "All" || inv.lines.some((l) => (catOf[l.product_name] || "Samah") === cat);
+  const inCat = (inv) => cat === "All" || inv.lines.some((l) => (catOf[l.product_name] || "Uncategorised") === cat);
 
   // Product summary: total units + total $ for the product search, over the date range
   let prodSummary = null;
@@ -2306,7 +2306,7 @@ function OrderList({ products, sales, businessName }) {
   const orderText = () => {
     const byCat = {};
     toOrder.forEach((it) => {
-      const c = it.p.category || "Samah";
+      const c = it.p.category || "Uncategorised";
       byCat[c] = byCat[c] || [];
       byCat[c].push(`  ${it.p.name}: ${orderQty(it)}${it.p.pack_size > 1 ? ` (pack of ${it.p.pack_size})` : ""}`);
     });
@@ -2326,7 +2326,7 @@ function OrderList({ products, sales, businessName }) {
     const w = window.open("", "_blank");
     if (!w) { alert("Please allow pop-ups to save the PDF."); return; }
     const byCat = {};
-    toOrder.forEach((it) => { const c = it.p.category || "Samah"; (byCat[c] = byCat[c] || []).push(it); });
+    toOrder.forEach((it) => { const c = it.p.category || "Uncategorised"; (byCat[c] = byCat[c] || []).push(it); });
     let body = "";
     Object.entries(byCat).forEach(([c, list]) => {
       body += `<h3>${c}</h3><table>`;
@@ -2594,7 +2594,7 @@ function Report({ sales, products, low, cats = [] }) {
   const [cat, setCat] = useState("All");
 
   const catOf = {}, pctOf = {};
-  (products || []).forEach((p) => { catOf[p.name] = p.category || "Samah"; pctOf[p.name] = Number(p.tithe_pct) || 0; });
+  (products || []).forEach((p) => { catOf[p.name] = p.category || "Uncategorised"; pctOf[p.name] = Number(p.tithe_pct) || 0; });
   // Live "to God" for a sale row, using the product's CURRENT percentage
   const titheOf = (s) => Number(s.total) * (pctOf[s.product_name] || 0) / 100;
 
@@ -2611,7 +2611,7 @@ function Report({ sales, products, low, cats = [] }) {
     return d >= startStr && d <= endStr;
   };
   const weekRows = sales.filter(inWeek);                 // all categories, this week
-  const inCat = (s) => cat === "All" || (catOf[s.product_name] || "Samah") === cat;
+  const inCat = (s) => cat === "All" || (catOf[s.product_name] || "Uncategorised") === cat;
   const rows = weekRows.filter(inCat);                   // selected category
 
   const totalSales = rows.reduce((a, s) => a + Number(s.total), 0);
@@ -2621,7 +2621,7 @@ function Report({ sales, products, low, cats = [] }) {
   // Per-category breakdown for the whole week (always shown)
   const catRows = {};
   weekRows.forEach((s) => {
-    const c = catOf[s.product_name] || "Samah";
+    const c = catOf[s.product_name] || "Uncategorised";
     catRows[c] = catRows[c] || { sales: 0, tithe: 0 };
     catRows[c].sales += Number(s.total);
     catRows[c].tithe += titheOf(s);
