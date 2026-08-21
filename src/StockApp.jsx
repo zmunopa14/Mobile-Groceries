@@ -1616,6 +1616,7 @@ function EditProductModal({ product, cats = [], onClose, onSave, onDelete }) {
   const [pct, setPct] = useState(String(product.tithe_pct));
   const [packSize, setPackSize] = useState(String(product.pack_size || 1));
   const [low, setLow] = useState(String(product.low_at));
+  const [orderBox, setOrderBox] = useState(String(product.order_box || 1));
   const [category, setCategory] = useState(product.category || "Uncategorised");
   const [busy, setBusy] = useState(false);
   const [confirmDel, setConfirmDel] = useState(false);
@@ -1630,6 +1631,7 @@ function EditProductModal({ product, cats = [], onClose, onSave, onDelete }) {
       tithe_pct: parseFloat(pct) || 0,
       pack_size: parseInt(packSize) || 1,
       low_at: parseInt(low) || 5,
+      order_box: Math.max(1, parseInt(orderBox) || 1),
       category,
     });
     setBusy(false);
@@ -1649,6 +1651,7 @@ function EditProductModal({ product, cats = [], onClose, onSave, onDelete }) {
         </select>
       </label>
       <Field label="Warn me when units drop to" value={low} onChange={setLow} type="number" />
+      <Field label="Order box size (how many you sell per box you buy — 1 if sold as-is)" value={orderBox} onChange={setOrderBox} type="number" />
       <p style={{ ...S.hint, marginBottom: 4 }}>To change quantity, tap the stock number on the list and type it.</p>
       <button style={{ ...S.btn, ...S.btnDark, width: "100%", marginTop: 4 }} disabled={busy} onClick={save}>
         <Check size={18} /> {busy ? "Saving…" : "Save changes"}
@@ -2301,27 +2304,35 @@ function OrderList({ products, sales, businessName }) {
   const items = products
     .filter((p) => p.qty <= p.low_at)
     .map((p) => {
+      const box = Math.max(1, p.order_box || 1);   // selling-units per order-box
       const sold = soldLastWeek[p.name] || 0;
-      // cover next week: order enough to replace what sold, minus what's left
-      const suggested = Math.max(0, Math.ceil(sold - Math.max(0, p.qty)));
-      // if nothing sold but it's out, suggest at least topping to the low level
-      const fallback = p.qty <= 0 ? Math.max(1, p.low_at) : 0;
-      const propose = suggested > 0 ? suggested : fallback;
-      return { p, sold, propose };
+      // loose selling-units needed to cover next week
+      const looseNeeded = Math.max(0, Math.ceil(sold - Math.max(0, p.qty)));
+      const fallbackLoose = p.qty <= 0 ? Math.max(1, p.low_at) : 0;
+      const loose = looseNeeded > 0 ? looseNeeded : fallbackLoose;
+      // convert to boxes, rounding UP so we never under-order
+      const proposeBoxes = Math.ceil(loose / box);
+      return { p, sold, box, loose, propose: proposeBoxes };
     })
     .sort((a, b) => (a.p.category || "").localeCompare(b.p.category || "") || a.p.name.localeCompare(b.p.name));
 
-  const orderQty = (it) => (qtys[it.p.id] !== undefined ? qtys[it.p.id] : it.propose);
+  const orderQty = (it) => (qtys[it.p.id] !== undefined ? qtys[it.p.id] : it.propose);  // in BOXES
   const setQty = (id, v) => setQtys((prev) => ({ ...prev, [id]: Math.max(0, parseInt(v) || 0) }));
 
   const toOrder = items.filter((it) => orderQty(it) > 0);
+
+  // Human label for a line, e.g. "2 boxes of 24" or just "3" when box size is 1
+  const lineLabel = (it) => {
+    const n = orderQty(it);
+    return it.box > 1 ? `${n} box${n === 1 ? "" : "es"} of ${it.box}` : `${n}`;
+  };
 
   const orderText = () => {
     const byCat = {};
     toOrder.forEach((it) => {
       const c = it.p.category || "Uncategorised";
       byCat[c] = byCat[c] || [];
-      byCat[c].push(`  ${it.p.name}: ${orderQty(it)}${it.p.pack_size > 1 ? ` (pack of ${it.p.pack_size})` : ""}`);
+      byCat[c].push(`  ${it.p.name}: ${lineLabel(it)}`);
     });
     let out = `${businessName} — Order list\n${new Date().toLocaleDateString()}\n`;
     Object.entries(byCat).forEach(([c, lines]) => { out += `\n${c}:\n${lines.join("\n")}`; });
@@ -2343,7 +2354,7 @@ function OrderList({ products, sales, businessName }) {
     let body = "";
     Object.entries(byCat).forEach(([c, list]) => {
       body += `<h3>${c}</h3><table>`;
-      list.forEach((it) => { body += `<tr><td>${it.p.name}${it.p.pack_size > 1 ? ` <span style="color:#888">(pack of ${it.p.pack_size})</span>` : ""}</td><td style="text-align:right">${orderQty(it)}</td></tr>`; });
+      list.forEach((it) => { body += `<tr><td>${it.p.name}</td><td style="text-align:right">${lineLabel(it)}</td></tr>`; });
       body += `</table>`;
     });
     w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Order list</title>
@@ -2360,18 +2371,24 @@ function OrderList({ products, sales, businessName }) {
   return (
     <>
       <SectionTitle>Order list (for Harare)</SectionTitle>
-      <p style={S.hint}>Shows items at or below their low-stock level. Suggested amounts are based on what sold in the last 7 days — adjust any number, then share.</p>
+      <p style={S.hint}>Shows items at or below their low-stock level. Suggestions come from last 7 days of sales and are shown in BOXES (set each product’s box size in its edit screen). Adjust any number, then share.</p>
 
       {items.length === 0 && <p style={S.empty}>Nothing is low right now. 🎉</p>}
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {items.map((it) => (
           <div key={it.p.id} style={S.card}>
             <div style={{ flex: 1 }}>
-              <div style={S.cardName}>{it.p.name} <span style={{ ...S.cardMeta, color: goldLt }}>{it.p.category}</span></div>
-              <div style={S.cardMeta}>sold {it.sold} last week · {it.p.qty} left → suggest {it.propose}</div>
+              <div style={S.cardName}>{it.p.name} {it.p.category && <span style={{ ...S.cardMeta, color: goldLt }}>{it.p.category}</span>}</div>
+              <div style={S.cardMeta}>
+                sold {it.sold} last week · {it.p.qty} left
+                {it.box > 1 ? ` → ${it.loose} needed = ${it.propose} box${it.propose === 1 ? "" : "es"} of ${it.box}` : ` → suggest ${it.propose}`}
+              </div>
             </div>
-            <input style={{ ...S.input, width: 70, textAlign: "center", fontWeight: 800 }} type="number"
-              value={orderQty(it)} onChange={(e) => setQty(it.p.id, e.target.value)} />
+            <div style={{ textAlign: "center" }}>
+              <input style={{ ...S.input, width: 64, textAlign: "center", fontWeight: 800 }} type="number"
+                value={orderQty(it)} onChange={(e) => setQty(it.p.id, e.target.value)} />
+              <div style={{ fontSize: 10, color: muted, marginTop: 2 }}>{it.box > 1 ? "boxes" : "qty"}</div>
+            </div>
           </div>
         ))}
       </div>
