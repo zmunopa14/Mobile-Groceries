@@ -1281,37 +1281,63 @@ async function readAmountFromImage(file) {
 // ============================================================
 // Tappable stock number — type the exact quantity, saves on Enter or when you tap away
 function StockEditor({ product, onSet }) {
-  const [editing, setEditing] = useState(false);
-  const [val, setVal] = useState(String(product.qty));
+  const [open, setOpen] = useState(false);
+  const box = Math.max(1, product.order_box || 1);
 
-  const start = () => { setVal(String(product.qty)); setEditing(true); };
-  const commit = () => {
-    setEditing(false);
-    if (val !== "" && parseFloat(val) !== product.qty) onSet(val);
+  return (
+    <>
+      <button onClick={() => setOpen(true)} title="Tap to change stock"
+        style={{ minWidth: 62, padding: "8px 6px", borderRadius: 10, border: `1px solid ${line}`,
+          background: "rgba(255,255,255,0.06)", color: ink, fontWeight: 800, fontSize: 16, cursor: "pointer",
+          display: "flex", flexDirection: "column", alignItems: "center", gap: 2 }}>
+        <span>{product.qty}</span>
+        <span style={{ fontSize: 9, color: muted, fontWeight: 600 }}>tap to edit</span>
+      </button>
+      {open && <StockEditPopup product={product} box={box} onSet={onSet} onClose={() => setOpen(false)} />}
+    </>
+  );
+}
+
+function StockEditPopup({ product, box, onSet, onClose }) {
+  const [exact, setExact] = useState(String(product.qty));
+  const [addUnits, setAddUnits] = useState("");
+  const [addBoxes, setAddBoxes] = useState("");
+
+  const doSet = () => { const n = parseFloat(exact); if (!isNaN(n)) { onSet(n); onClose(); } };
+  const doAddUnits = () => {
+    const n = parseFloat(addUnits);
+    if (!isNaN(n) && n !== 0) { onSet(Number(product.qty) + n); onClose(); }
+  };
+  const doAddBoxes = () => {
+    const n = parseFloat(addBoxes);
+    if (!isNaN(n) && n !== 0) { onSet(Number(product.qty) + n * box); onClose(); }
   };
 
-  if (editing) {
-    return (
-      <input
-        autoFocus
-        type="number"
-        inputMode="decimal"
-        value={val}
-        onChange={(e) => setVal(e.target.value)}
-        onBlur={commit}
-        onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }}
-        style={{ ...S.input, width: 70, textAlign: "center", padding: "8px 6px", fontWeight: 800 }}
-      />
-    );
-  }
   return (
-    <button onClick={start} title="Tap to set stock"
-      style={{ minWidth: 62, padding: "8px 6px", borderRadius: 10, border: `1px solid ${line}`,
-        background: "rgba(255,255,255,0.06)", color: ink, fontWeight: 800, fontSize: 16, cursor: "pointer",
-        display: "flex", flexDirection: "column", alignItems: "center", gap: 2 }}>
-      <span>{product.qty}</span>
-      <span style={{ fontSize: 9, color: muted, fontWeight: 600 }}>tap to edit</span>
-    </button>
+    <Modal onClose={onClose} title={product.name}>
+      <p style={{ ...S.hint, marginTop: 0 }}>Currently <b style={{ color: ink }}>{product.qty}</b> in stock.</p>
+
+      <SectionTitle>Add to stock</SectionTitle>
+      <p style={S.hint}>Got a delivery? Add to what’s there — no need to work out the new total.</p>
+      <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+        <input style={{ ...S.input, flex: 1 }} type="number" inputMode="decimal" value={addUnits}
+          placeholder="Add units (e.g. 5)" onChange={(e) => setAddUnits(e.target.value)} />
+        <button style={{ ...S.btn, ...S.btnDark }} disabled={!addUnits} onClick={doAddUnits}>Add</button>
+      </div>
+      <div style={{ display: "flex", gap: 8 }}>
+        <input style={{ ...S.input, flex: 1 }} type="number" inputMode="decimal" value={addBoxes}
+          placeholder={`Add boxes${box > 1 ? ` (×${box} each)` : ""}`} onChange={(e) => setAddBoxes(e.target.value)} />
+        <button style={{ ...S.btn, ...S.btnDark }} disabled={!addBoxes} onClick={doAddBoxes}>Add</button>
+      </div>
+      {box <= 1 && <p style={{ ...S.hint, marginTop: 6 }}>Tip: set this product’s “order box size” in its edit screen so a box adds the right number of units.</p>}
+
+      <SectionTitle>Or set the exact number</SectionTitle>
+      <div style={{ display: "flex", gap: 8 }}>
+        <input style={{ ...S.input, flex: 1 }} type="number" inputMode="decimal" value={exact}
+          onChange={(e) => setExact(e.target.value)} />
+        <button style={{ ...S.btn, ...S.btnGhost }} onClick={doSet}>Set</button>
+      </div>
+    </Modal>
   );
 }
 
