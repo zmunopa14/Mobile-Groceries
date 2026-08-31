@@ -239,6 +239,7 @@ function emojiFor(name) {
 export default function App() {
   const [user, setUser] = useState(null); // {id,name,role,business_id}
   const [bizNames, setBizNames] = useState({ 1: "Business 1", 2: "Business 2" });
+  const [sellMode, setSellMode] = useState(false); // admin temporarily selling
 
   useEffect(() => {
     (async () => {
@@ -254,8 +255,13 @@ export default function App() {
   if (!configured) return <SetupNotice />;
   if (!user) return <Login onLogin={setUser} />;
   const businessName = bizNames[user.business_id] || `Business ${user.business_id}`;
+
+  // Admin who tapped "Make a sale" → show the full selling screen, with a way back
+  if (user.role === "admin" && sellMode) {
+    return <Seller user={user} businessName={businessName} sellMode onExit={() => setSellMode(false)} />;
+  }
   return user.role === "admin"
-    ? <Admin user={user} businessName={businessName} onExit={() => setUser(null)} />
+    ? <Admin user={user} businessName={businessName} onExit={() => setUser(null)} onSell={() => setSellMode(true)} />
     : <Seller user={user} businessName={businessName} onExit={() => setUser(null)} />;
 }
 
@@ -355,9 +361,14 @@ function useData(businessId) {
     try {
       setError("");
       const bizFilter = `business_id=eq.${businessId}&`;
+      // LOW-DATA: only fetch the last ~120 days of sales by default. This covers
+      // daily operation plus weekly/Tuesday/compare reports, and is far smaller
+      // than pulling the whole history every time. (Older data can be loaded on
+      // demand later if we add a "load older" button.)
+      const cutoff = new Date(Date.now() - 120 * 86400000).toISOString();
       const [p, s] = await Promise.all([
         sb.select("products", `${bizFilter}order=created_at.asc`),
-        sb.select("sales", `${bizFilter}order=sold_at.desc&limit=5000`),
+        sb.select("sales", `${bizFilter}sold_at=gte.${cutoff}&order=sold_at.desc&limit=4000`),
       ]);
       setProducts(p); setSales(s);
       store.set(cacheKey(businessId, "products"), p);
@@ -377,12 +388,24 @@ function useData(businessId) {
 
   useEffect(() => {
     refresh();
-    const t = setInterval(refresh, 8000);
+    // LOW-DATA: refresh once a minute (was every 8s), and only while the app is
+    // actually on screen — no data is used when it's in the background.
+    let t = null;
+    const start = () => { if (!t) t = setInterval(() => { if (isOnline()) refresh(); }, 60000); };
+    const stop = () => { if (t) { clearInterval(t); t = null; } };
+    const onVis = () => { if (document.hidden) stop(); else { refresh(); start(); } };
+    if (!document.hidden) start();
+    document.addEventListener("visibilitychange", onVis);
     const goOnline = () => { setOnline(true); refresh(); };
     const goOffline = () => setOnline(false);
     window.addEventListener("online", goOnline);
     window.addEventListener("offline", goOffline);
-    return () => { clearInterval(t); window.removeEventListener("online", goOnline); window.removeEventListener("offline", goOffline); };
+    return () => {
+      stop();
+      document.removeEventListener("visibilitychange", onVis);
+      window.removeEventListener("online", goOnline);
+      window.removeEventListener("offline", goOffline);
+    };
   }, [refresh]);
 
   return { products, sales, loading, error, refresh, online, pending, setPendingCount };
@@ -391,7 +414,7 @@ function useData(businessId) {
 // ============================================================
 // 5. ADMIN
 // ============================================================
-function Admin({ user, onExit, businessName }) {
+function Admin({ user, onExit, businessName, onSell }) {
   const { products, sales, loading, error, refresh } = useData(user.business_id);
   const [tab, setTab] = useState("overview");
   const [cats, setCats] = useState([]);   // this business's category names
@@ -450,6 +473,11 @@ function Admin({ user, onExit, businessName }) {
       <div style={S.body}>
         {loading ? <Loading /> : <>
           {tab === "overview" && <>
+            {onSell && (
+              <button style={{ ...S.btn, ...S.btnGold, width: "100%", marginBottom: 14 }} onClick={onSell}>
+                <ShoppingCart size={18} /> Make a sale
+              </button>
+            )}
             <div style={S.statGrid}>
               <Stat icon={<TrendingUp size={16} />} label="Sales today" value={money(daySales)} accent delay={0} />
               <Stat icon={<Wallet size={16} />} label="Cash today" value={money(dayCash)} tint={mango} delay={0.05} />
@@ -467,7 +495,7 @@ function Admin({ user, onExit, businessName }) {
           {tab === "compare" && <Compare sales={sales} />}
           {tab === "cashups" && <CashUps businessId={user.business_id} sales={sales} />}
           {tab === "report" && <Report sales={sales} products={products} low={[...out, ...low]} cats={cats} />}
-          {tab === "team" && <TeamManager onChange={refresh} businessId={user.business_id} sales={sales} />}
+          {tab === "team" && <TeamManager onChange={refresh} businessId={user.business_id} sales={sales} user={user} />}
         </>}
       </div>
     </div>
@@ -477,7 +505,7 @@ function Admin({ user, onExit, businessName }) {
 // ============================================================
 // 6. SELLER
 // ============================================================
-function Seller({ user, onExit, businessName }) {
+function Seller({ user, onExit, businessName, sellMode }) {
   const { products, sales, loading, error, refresh, online, pending, setPendingCount } = useData(user.business_id);
   const [toast, setToast] = useState("");
   const [adding, setAdding] = useState(null);   // product being added to cart
@@ -583,7 +611,7 @@ function Seller({ user, onExit, businessName }) {
   return (
     <div style={S.shell}>
       <LightWatermark />
-      <Header title={user.name} sub={`${businessName} · Seller`} onExit={onExit} onRefresh={refresh} />
+      <Header title={user.name} sub={sellMode ? `${businessName} · Selling` : `${businessName} · Seller`} onExit={onExit} onRefresh={refresh} exitLabel={sellMode ? "Back to admin" : undefined} />
       {error && <div style={S.alert}><AlertTriangle size={16} /> {error}</div>}
       {!online && (
         <div style={{ ...S.alert, background: "#FFF1DA", color: "#B26A00" }}>
@@ -2781,16 +2809,30 @@ function Report({ sales, products, low, cats = [] }) {
 // ============================================================
 // 9. TEAM MANAGER (admin) — create salespeople with a PIN
 // ============================================================
-function TeamManager({ onChange, businessId, sales = [] }) {
+function TeamManager({ onChange, businessId, sales = [], user }) {
   const [members, setMembers] = useState([]);
   const [name, setName] = useState("");
   const [pin, setPin] = useState("");
   const [busy, setBusy] = useState(false);
+  const [myPin, setMyPin] = useState("");
+  const [myPin2, setMyPin2] = useState("");
+  const [changing, setChanging] = useState(false);
 
   const load = useCallback(async () => {
     try { setMembers(await sb.select("members", `business_id=eq.${businessId}&select=id,name,role,created_at&order=created_at.asc`)); } catch {}
   }, [businessId]);
   useEffect(() => { load(); }, [load]);
+
+  const changeMyPin = async () => {
+    if (myPin.length !== 4) { alert("PIN must be 4 digits."); return; }
+    if (myPin !== myPin2) { alert("The two PINs don't match. Please type the same PIN twice."); return; }
+    setChanging(true);
+    try {
+      await sb.rpc("upsert_member", { p_name: user.name, p_pin: myPin, p_role: user.role, p_business_id: businessId });
+      setMyPin(""); setMyPin2(""); alert("Your PIN has been changed. Use it next time you sign in.");
+    } catch (e) { alert(e.message); }
+    setChanging(false);
+  };
 
   const add = async () => {
     if (!name.trim() || pin.length < 4) return;
@@ -2806,6 +2848,25 @@ function TeamManager({ onChange, businessId, sales = [] }) {
 
   return (
     <>
+      {user && <>
+        <SectionTitle>My PIN</SectionTitle>
+        <p style={S.hint}>Change your own sign-in PIN. You’ll use the new one next time you log in.</p>
+        <div style={S.fieldWrap}>
+          <span style={S.fieldLabel}>New PIN (4 digits)</span>
+          <input style={S.input} value={myPin} onChange={(e)=>setMyPin(e.target.value.replace(/\D/g,"").slice(0,4))}
+            inputMode="numeric" placeholder="••••" />
+        </div>
+        <div style={S.fieldWrap}>
+          <span style={S.fieldLabel}>Type it again</span>
+          <input style={S.input} value={myPin2} onChange={(e)=>setMyPin2(e.target.value.replace(/\D/g,"").slice(0,4))}
+            inputMode="numeric" placeholder="••••" />
+        </div>
+        <button style={{ ...S.btn, ...S.btnDark, width: "100%", marginBottom: 20 }} disabled={changing || myPin.length !== 4} onClick={changeMyPin}>
+          <Check size={17} /> {changing ? "Saving…" : "Change my PIN"}
+        </button>
+      </>}
+
+      <SectionTitle>Add a salesperson</SectionTitle>
       <p style={S.hint}>Add a salesperson with a 4-digit PIN. They sign in with their name and PIN.</p>
       <Field label="Name" value={name} onChange={setName} placeholder="e.g. Tendai" />
       <div style={S.fieldWrap}>
@@ -2906,7 +2967,7 @@ function MemberDetail({ member, businessId, onClose, onChanged, onRemoved }) {
 // ============================================================
 // 10. SHARED UI
 // ============================================================
-function Header({ title, sub, onExit, onRefresh }) {
+function Header({ title, sub, onExit, onRefresh, exitLabel }) {
   return (
     <div style={S.header}>
       <div>
@@ -2915,7 +2976,7 @@ function Header({ title, sub, onExit, onRefresh }) {
       </div>
       <div style={{ display: "flex", gap: 8 }}>
         {onRefresh && <button style={S.exitBtn} onClick={onRefresh}><RefreshCw size={15} /></button>}
-        <button style={S.exitBtn} onClick={onExit}><LogOut size={16} /> Sign out</button>
+        <button style={S.exitBtn} onClick={onExit}><LogOut size={16} /> {exitLabel || "Sign out"}</button>
       </div>
     </div>
   );
