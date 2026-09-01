@@ -423,6 +423,17 @@ export default function App() {
     : <Seller user={user} businessName={businessName} onExit={() => setUser(null)} />;
 }
 
+// Distinctive brand mark used inside the gold badge — a "P" under a stall roof.
+function PamusikaMark({ size = 26 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 48 48" fill="none" aria-hidden="true">
+      <path d="M8 18 L24 7 L40 18" stroke="#0c241d" strokeWidth="3" strokeLinejoin="round" strokeLinecap="round" fill="none" />
+      <path d="M17 40 L17 21 L27 21 Q33 21 33 27.5 Q33 34 27 34 L17 34"
+        stroke="#0c241d" strokeWidth="3.4" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+    </svg>
+  );
+}
+
 // ============================================================
 // 3. LOGIN (two-step: business name, then name + PIN)
 // ============================================================
@@ -460,7 +471,7 @@ function Login({ onLogin }) {
       <MarketWatermark />
       <div style={{ ...S.loginCard, position: "relative", zIndex: 1 }}>
         <HeroImage />
-        <div style={S.logoMark}><Box size={24} strokeWidth={2.4} /></div>
+        <div style={S.logoMark}><PamusikaMark size={30} /></div>
         <h1 style={S.loginTitle}>Pamusika</h1>
 
         {step === 1 ? (
@@ -3383,7 +3394,7 @@ function SetupNotice() {
   return (
     <div style={S.shell}>
       <div style={S.loginCard}>
-        <div style={S.logoMark}><Box size={26} strokeWidth={2.4} /></div>
+        <div style={S.logoMark}><PamusikaMark size={30} /></div>
         <h1 style={S.loginTitle}>Almost ready</h1>
         <p style={{ ...S.loginSub, textAlign: "left", lineHeight: 1.6 }}>
           Open the code and paste your Supabase <b>Project URL</b> and <b>anon key</b> into the
@@ -3411,8 +3422,8 @@ const S = {
   heroWrap: { borderRadius: 18, overflow: "hidden", marginBottom: 16, border: "1px solid rgba(230,196,77,0.2)", boxShadow: "0 14px 34px rgba(0,0,0,0.4)" },
   watermark: { position: "absolute", inset: 0, width: "100%", height: "100%", opacity: 0.05, pointerEvents: "none", zIndex: 0 },
   watermarkLight: { position: "absolute", top: 60, left: 0, width: "100%", height: 520, opacity: 0.035, pointerEvents: "none", zIndex: 0 },
-  logoMark: { width: 60, height: 60, borderRadius: 18, background: `linear-gradient(135deg,${goldLt},${gold})`, color: darkbg, display: "grid", placeItems: "center", margin: "0 auto 14px", boxShadow: "0 10px 30px rgba(201,162,39,0.4)", animation: "bob 3s ease-in-out infinite" },
-  loginTitle: { fontSize: 40, fontWeight: 800, letterSpacing: "-0.03em", margin: "0 0 6px", background: `linear-gradient(135deg,${goldLt} 0%, #fff 45%, ${lime} 100%)`, WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent", backgroundClip: "text" },
+  logoMark: { width: 62, height: 62, borderRadius: 20, background: `linear-gradient(150deg,${goldLt},${gold})`, color: darkbg, display: "grid", placeItems: "center", margin: "0 auto 16px", boxShadow: "0 12px 34px rgba(201,162,39,0.35), inset 0 1px 0 rgba(255,255,255,0.4)", animation: "bob 4s ease-in-out infinite" },
+  loginTitle: { fontSize: 42, fontWeight: 600, letterSpacing: "-0.01em", margin: "0 0 6px", fontFamily: "'Fraunces', Georgia, serif", color: goldLt },
   loginSub: { fontSize: 14, color: "rgba(234,243,236,0.7)", margin: "0 0 22px", lineHeight: 1.5 },
   errTxt: { color: "#C0392B", fontSize: 13.5, marginTop: 12 },
 
@@ -3425,7 +3436,7 @@ const S = {
   btnGold: { background: `linear-gradient(135deg,${goldLt},${gold})`, color: darkbg, boxShadow: "0 8px 22px rgba(201,162,39,0.4)", fontWeight: 800 },
 
   header: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "22px 20px 14px", position: "relative", zIndex: 1 },
-  headTitle: { fontSize: 26, fontWeight: 800, letterSpacing: "-0.02em", background: `linear-gradient(120deg,${accent} 0%, ${lime} 60%, ${gold} 100%)`, WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent", backgroundClip: "text" },
+  headTitle: { fontSize: 25, fontWeight: 600, letterSpacing: "-0.01em", fontFamily: "'Fraunces', Georgia, serif", color: ink },
   headSub: { fontSize: 12, color: muted, textTransform: "uppercase", letterSpacing: "0.06em" },
   exitBtn: { display: "flex", alignItems: "center", gap: 6, background: cardBg, border: `1px solid ${line}`, padding: "7px 12px", borderRadius: 10, fontSize: 13, color: ink, cursor: "pointer" },
 
@@ -3443,11 +3454,11 @@ const S = {
   statLabel: { fontSize: 11.5, color: muted, marginBottom: 3 },
   statValue: { fontSize: 22, fontWeight: 800, letterSpacing: "-0.02em" },
 
-  sectionTitle: { fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", color: muted, margin: "22px 0 10px" },
+  sectionTitle: { fontSize: 17, fontWeight: 600, letterSpacing: "-0.01em", fontFamily: "'Fraunces', Georgia, serif", color: ink, margin: "22px 0 10px" },
   hint: { fontSize: 13, color: muted, margin: "-4px 0 12px", lineHeight: 1.5 },
   empty: { fontSize: 13.5, color: muted, textAlign: "center", padding: "20px 0" },
 
-  card: { display: "flex", alignItems: "center", gap: 12, background: cardBg, border: `1px solid ${line}`, borderRadius: 16, padding: "13px 15px", borderTop: `2px solid rgba(230,196,77,0.35)` },
+  card: { display: "flex", alignItems: "center", gap: 12, background: cardBg, border: `1px solid rgba(255,255,255,0.08)`, borderRadius: 14, padding: "13px 15px" },
   cardName: { fontSize: 15, fontWeight: 700, letterSpacing: "-0.01em" },
   cardMeta: { fontSize: 12.5, color: muted, marginTop: 2 },
   lowTag: { fontSize: 10, background: "#FFE2E2", color: "#C0392B", padding: "2px 7px", borderRadius: 20, fontWeight: 700, marginLeft: 6, verticalAlign: "middle" },
@@ -3477,7 +3488,7 @@ const S = {
 
   reportHead: { display: "flex", alignItems: "center", gap: 12, background: `linear-gradient(135deg,${grape},${berry})`, color: "#fff", padding: "16px 18px", borderRadius: 16, marginBottom: 14, boxShadow: "0 8px 22px rgba(124,92,214,0.3)" },
 
-  btn: { display: "flex", alignItems: "center", justifyContent: "center", gap: 8, border: "none", padding: "14px 16px", borderRadius: 14, fontSize: 14.5, fontWeight: 800, cursor: "pointer" },
+  btn: { display: "flex", alignItems: "center", justifyContent: "center", gap: 8, border: "none", padding: "13px 16px", borderRadius: 12, fontSize: 14.5, fontWeight: 700, cursor: "pointer" },
   btnDark: { background: `linear-gradient(135deg,${accent},${lime})`, color: "#fff", boxShadow: "0 6px 16px rgba(31,157,85,0.3)" },
   btnGhost: { background: "rgba(255,255,255,0.06)", color: ink, border: `1px solid ${line}` },
   btnWarn: { background: `linear-gradient(135deg,${mango},#E8820C)`, color: "#fff", boxShadow: "0 6px 16px rgba(245,166,35,0.35)" },
@@ -3512,6 +3523,14 @@ const S = {
 };
 
 if (typeof document !== "undefined" && !document.getElementById("sf-spin")) {
+  // Load a distinctive display face (Fraunces) for the wordmark/headings, paired
+  // with Inter for body & numbers. This gives a considered, premium feel rather
+  // than the default single-sans look.
+  const f = document.createElement("link");
+  f.rel = "stylesheet";
+  f.href = "https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600;700;800&display=swap";
+  document.head.appendChild(f);
+
   const st = document.createElement("style");
   st.id = "sf-spin";
   st.textContent = `
@@ -3520,10 +3539,10 @@ if (typeof document !== "undefined" && !document.getElementById("sf-spin")) {
     @keyframes rise{0%{transform:translateY(14px);opacity:0}100%{transform:translateY(0);opacity:1}}
     @keyframes popIn{0%{transform:scale(0.9);opacity:0}100%{transform:scale(1);opacity:1}}
     @keyframes slideIn{0%{transform:translateX(-100%)}100%{transform:translateX(0)}}
-    @keyframes bob{0%,100%{transform:translateY(0)}50%{transform:translateY(-6px)}}
+    @keyframes bob{0%,100%{transform:translateY(0)}50%{transform:translateY(-5px)}}
     button{transition:transform 0.08s ease, filter 0.12s ease}
-    button:active{transform:scale(0.95)}
-    button:hover{filter:brightness(1.05)}
+    button:active{transform:scale(0.97)}
+    @media (prefers-reduced-motion: reduce){*{animation:none !important}}
   `;
   document.head.appendChild(st);
 }
