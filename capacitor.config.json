@@ -1,0 +1,8 @@
+{
+  "appId": "co.zw.samahvalley.pamusika",
+  "appName": "Pamusika",
+  "webDir": "dist",
+  "server": {
+    "androidScheme": "https"
+  }
+}
