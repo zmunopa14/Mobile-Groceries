@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import { jsPDF } from "jspdf";
 import {
   Package, TrendingUp, Users, AlertTriangle, Plus, Minus, LogOut,
   Church, Wallet, FileText, ChevronRight, Box, X, Check, Delete, RefreshCw, Search, Pencil, ShoppingCart, Send, Menu
@@ -236,50 +235,222 @@ function emojiFor(name) {
 // ============================================================
 // 2. ROOT
 // ============================================================
+// ============================================================
+// SUBSCRIPTION: pay screen (locked) + owner approval screen
+// ============================================================
+function PayScreen({ user, businessName, onExit, onSubmitted }) {
+  const [ref, setRef] = useState("");
+  const [weeks, setWeeks] = useState(1);
+  const [busy, setBusy] = useState(false);
+  const [sent, setSent] = useState(false);
+
+  const openEcocash = () => { window.location.href = `tel:${encodeURIComponent("*151#")}`; };
+  const submit = async () => {
+    if (!ref.trim()) { alert("Please enter the EcoCash confirmation reference."); return; }
+    setBusy(true);
+    try {
+      await sb.insert("payments", {
+        business_id: user.business_id, amount: WEEKLY_PRICE * weeks,
+        reference: ref.trim(), weeks, status: "pending",
+      });
+      setSent(true); onSubmitted();
+    } catch (e) { alert(e.message); }
+    setBusy(false);
+  };
+
+  return (
+    <div style={S.loginDarkShell}>
+      <div style={{ ...S.loginCard, position: "relative", zIndex: 1, maxWidth: 400 }}>
+        <div style={S.logoMark}><Wallet size={24} strokeWidth={2.4} /></div>
+        <h1 style={{ ...S.loginTitle, fontSize: 28 }}>Subscription due</h1>
+        <p style={S.loginSub}>{businessName}, your access is paused until this week’s payment is confirmed.</p>
+
+        {sent ? (
+          <div style={{ ...S.card, flexDirection: "column", alignItems: "stretch", textAlign: "center", padding: 18 }}>
+            <div style={{ fontSize: 34 }}>⏳</div>
+            <div style={{ fontWeight: 800, marginTop: 6 }}>Payment submitted</div>
+            <p style={S.hint}>We’ve received your reference and it’s waiting to be approved. You’ll get access as soon as it’s confirmed. Try signing in again shortly.</p>
+            <button style={{ ...S.btn, ...S.btnGhost, width: "100%" }} onClick={onExit}>Back to sign in</button>
+          </div>
+        ) : (
+          <>
+            <div style={{ ...S.cartTotalRow, marginBottom: 12 }}>
+              <span>Weekly fee</span><span>${WEEKLY_PRICE.toFixed(2)}</span>
+            </div>
+            <div style={{ textAlign: "left", marginBottom: 12 }}>
+              <div style={S.fieldLabel}>How to pay with EcoCash</div>
+              <ol style={{ ...S.hint, paddingLeft: 18, lineHeight: 1.6 }}>
+                <li>Send <b style={{ color: goldLt }}>${(WEEKLY_PRICE * weeks).toFixed(2)}</b> to <b style={{ color: goldLt }}>{ECOCASH_NUMBER}</b></li>
+                <li>Copy the EcoCash confirmation reference (from the SMS)</li>
+                <li>Paste it below and tap Submit</li>
+              </ol>
+            </div>
+            <label style={S.fieldWrap}>
+              <span style={S.fieldLabel}>Weeks paying for</span>
+              <select style={S.inputDark} value={weeks} onChange={(e) => setWeeks(parseInt(e.target.value))}>
+                {[1,2,3,4].map((w) => <option key={w} value={w}>{w} week{w>1?"s":""} — ${(WEEKLY_PRICE*w).toFixed(2)}</option>)}
+              </select>
+            </label>
+            <button style={{ ...S.btn, ...S.btnGhost, width: "100%", marginBottom: 8 }} onClick={openEcocash}>Open EcoCash (*151#)</button>
+            <label style={S.fieldWrap}>
+              <span style={{ ...S.fieldLabel, color: "rgba(234,243,236,0.8)" }}>EcoCash reference</span>
+              <input style={S.inputDark} value={ref} onChange={(e) => setRef(e.target.value)} placeholder="e.g. MP12345678" />
+            </label>
+            <button style={{ ...S.btn, ...S.btnGold, width: "100%", marginTop: 6 }} disabled={busy || !ref.trim()} onClick={submit}>
+              {busy ? "Submitting…" : "Submit payment"}
+            </button>
+            <button style={{ ...S.btn, ...S.btnGhost, width: "100%", marginTop: 8 }} onClick={onExit}>Sign out</button>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function OwnerScreen({ user, businesses, onExit, onChange }) {
+  const [payments, setPayments] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(async () => {
+    try { setPayments(await sb.select("payments", "order=created_at.desc&limit=200")); } catch {}
+    setLoading(false);
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const bizName = (id) => (businesses.find((b) => b.id === id) || {}).name || `Business ${id}`;
+  const approve = async (id) => {
+    setBusy(true);
+    try { await sb.rpc("approve_payment", { p_id: id }); await load(); onChange(); }
+    catch (e) { alert(e.message); }
+    setBusy(false);
+  };
+  const reject = async (id) => {
+    setBusy(true);
+    try { await sb.patch("payments", `id=eq.${id}`, { status: "rejected" }); await load(); }
+    catch (e) { alert(e.message); }
+    setBusy(false);
+  };
+
+  const pending = payments.filter((p) => p.status === "pending");
+
+  return (
+    <div style={S.shell}>
+      <Header title="Owner" sub="Payment approvals" onExit={onExit} onRefresh={load} />
+      <div style={S.body}>
+        <SectionTitle>Businesses</SectionTitle>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 20 }}>
+          {businesses.filter((b) => b.id !== 0).map((b) => {
+            const until = b.paid_until ? new Date(b.paid_until) : null;
+            const active = until && until.getTime() > Date.now();
+            return (
+              <div key={b.id} style={S.card}>
+                <div style={{ flex: 1 }}>
+                  <div style={S.cardName}>{b.name}</div>
+                  <div style={S.cardMeta}>{until ? `Paid until ${until.toLocaleDateString()}` : "No subscription set"}</div>
+                </div>
+                <span style={{ fontSize: 12, fontWeight: 800, color: active ? accent : "#FF8B7A" }}>{active ? "Active" : "Expired"}</span>
+              </div>
+            );
+          })}
+        </div>
+
+        <SectionTitle>Pending payments</SectionTitle>
+        {loading && <Loading />}
+        {!loading && pending.length === 0 && <p style={S.empty}>No payments waiting for approval.</p>}
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {pending.map((p) => (
+            <div key={p.id} style={{ ...S.card, flexDirection: "column", alignItems: "stretch", gap: 8 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <div style={{ flex: 1 }}>
+                  <div style={S.cardName}>{bizName(p.business_id)} · ${Number(p.amount).toFixed(2)}</div>
+                  <div style={S.cardMeta}>Ref: {p.reference} · {p.weeks} week{p.weeks>1?"s":""} · {new Date(p.created_at).toLocaleString()}</div>
+                </div>
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button style={{ ...S.btn, ...S.btnDark, flex: 1 }} disabled={busy} onClick={() => approve(p.id)}><Check size={16} /> Approve</button>
+                <button style={{ ...S.btn, ...S.btnGhost, flex: 1, color: "#FF8B7A" }} disabled={busy} onClick={() => reject(p.id)}>Reject</button>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const WEEKLY_PRICE = 2;                 // US$ per week — change here if needed
+const ECOCASH_NUMBER = "+263 78 734 8881";
+
 export default function App() {
   const [user, setUser] = useState(null); // {id,name,role,business_id}
-  const [bizNames, setBizNames] = useState({ 1: "Business 1", 2: "Business 2" });
+  const [bizList, setBizList] = useState([]); // full business rows incl paid_until
   const [sellMode, setSellMode] = useState(false); // admin temporarily selling
+  const [tick, setTick] = useState(0); // force re-check after payment approval
 
-  useEffect(() => {
-    (async () => {
-      try {
-        const rows = await sb.select("businesses", "select=id,name");
-        const m = {};
-        rows.forEach((b) => { m[b.id] = b.name; });
-        setBizNames((prev) => ({ ...prev, ...m }));
-      } catch {}
-    })();
-  }, [user]);
+  const loadBiz = useCallback(async () => {
+    try { setBizList(await sb.select("businesses", "select=id,name,paid_until&order=id.asc")); } catch {}
+  }, []);
+  useEffect(() => { loadBiz(); }, [loadBiz, user, tick]);
+
+  const bizNames = {};
+  bizList.forEach((b) => { bizNames[b.id] = b.name; });
 
   if (!configured) return <SetupNotice />;
   if (!user) return <Login onLogin={setUser} />;
   const businessName = bizNames[user.business_id] || `Business ${user.business_id}`;
+
+  // Owner (super) login → payment approvals across all businesses
+  if (user.role === "owner") {
+    return <OwnerScreen user={user} businesses={bizList} onExit={() => setUser(null)} onChange={() => setTick((t) => t + 1)} />;
+  }
+
+  // Subscription gate: if this business's paid_until has passed, lock with pay
+  // screen — UNLESS this specific user is exempt (e.g. Munopa).
+  const biz = bizList.find((b) => b.id === user.business_id);
+  const paidUntil = biz && biz.paid_until ? new Date(biz.paid_until) : null;
+  const isPaid = paidUntil ? paidUntil.getTime() > Date.now() : true; // if unknown, don't lock
+  if (bizList.length > 0 && !isPaid && !user.exempt) {
+    return <PayScreen user={user} businessName={businessName} onExit={() => setUser(null)} onSubmitted={() => setTick((t) => t + 1)} />;
+  }
 
   // Admin who tapped "Make a sale" → show the full selling screen, with a way back
   if (user.role === "admin" && sellMode) {
     return <Seller user={user} businessName={businessName} sellMode onExit={() => setSellMode(false)} />;
   }
   return user.role === "admin"
-    ? <Admin user={user} businessName={businessName} onExit={() => setUser(null)} onSell={() => setSellMode(true)} />
+    ? <Admin user={user} businessName={businessName} onExit={() => setUser(null)} onSell={() => setSellMode(true)} paidUntil={paidUntil} />
     : <Seller user={user} businessName={businessName} onExit={() => setUser(null)} />;
 }
 
 // ============================================================
-// 3. LOGIN (name + PIN)
+// 3. LOGIN (two-step: business name, then name + PIN)
 // ============================================================
 function Login({ onLogin }) {
+  const [step, setStep] = useState(1);
+  const [bizInput, setBizInput] = useState("");
+  const [biz, setBiz] = useState(null); // {id, name}
   const [name, setName] = useState("");
   const [pin, setPin] = useState("");
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
 
+  const findBiz = async () => {
+    setErr(""); setBusy(true);
+    try {
+      const rows = await sb.rpc("find_business", { p_name: bizInput.trim() });
+      if (rows && rows.length) { setBiz(rows[0]); setStep(2); }
+      else setErr("We couldn't find that business name. Check the spelling.");
+    } catch (e) { setErr(e.message); }
+    setBusy(false);
+  };
+
   const submit = async () => {
     setErr(""); setBusy(true);
     try {
-      const rows = await sb.rpc("login_with_pin", { p_name: name.trim(), p_pin: pin });
+      const rows = await sb.rpc("login_in_business", { p_name: name.trim(), p_pin: pin, p_business_id: biz.id });
       if (rows && rows.length) onLogin(rows[0]);
-      else setErr("Name or PIN is incorrect.");
+      else setErr("Name or PIN is incorrect for this business.");
     } catch (e) { setErr(e.message); }
     setBusy(false);
   };
@@ -291,23 +462,46 @@ function Login({ onLogin }) {
         <HeroImage />
         <div style={S.logoMark}><Box size={24} strokeWidth={2.4} /></div>
         <h1 style={S.loginTitle}>Pamusika</h1>
-        <p style={S.loginSub}>Enter your name and PIN to sign in.</p>
 
-        <div style={S.fieldWrap}>
-          <span style={{ ...S.fieldLabel, color: "rgba(234,243,236,0.8)" }}>Name</span>
-          <input style={S.inputDark} value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Mum" />
-        </div>
-        <div style={S.fieldWrap}>
-          <span style={{ ...S.fieldLabel, color: "rgba(234,243,236,0.8)" }}>PIN</span>
-          <PinDots value={pin} />
-        </div>
-        <Keypad value={pin} onChange={setPin} dark />
-
-        {err && <p style={S.errTxt}>{err}</p>}
-        <button style={{ ...S.btn, ...S.btnGold, width: "100%", marginTop: 10 }}
-          disabled={busy || !name.trim() || pin.length < 4} onClick={submit}>
-          {busy ? "Checking…" : "Sign in"}
-        </button>
+        {step === 1 ? (
+          <>
+            <p style={S.loginSub}>Enter your business name to begin.</p>
+            <div style={S.fieldWrap}>
+              <span style={{ ...S.fieldLabel, color: "rgba(234,243,236,0.8)" }}>Business name</span>
+              <input style={S.inputDark} value={bizInput} autoFocus
+                onChange={(e) => setBizInput(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter" && bizInput.trim()) findBiz(); }}
+                placeholder="e.g. Samah Valley" />
+            </div>
+            {err && <p style={S.errTxt}>{err}</p>}
+            <button style={{ ...S.btn, ...S.btnGold, width: "100%", marginTop: 10 }}
+              disabled={busy || !bizInput.trim()} onClick={findBiz}>
+              {busy ? "Checking…" : "Continue"}
+            </button>
+          </>
+        ) : (
+          <>
+            <p style={S.loginSub}>Welcome to <b style={{ color: goldLt }}>{biz.name}</b>. Enter your name and PIN.</p>
+            <div style={S.fieldWrap}>
+              <span style={{ ...S.fieldLabel, color: "rgba(234,243,236,0.8)" }}>Name</span>
+              <input style={S.inputDark} value={name} autoFocus onChange={(e) => setName(e.target.value)} placeholder="Your name" />
+            </div>
+            <div style={S.fieldWrap}>
+              <span style={{ ...S.fieldLabel, color: "rgba(234,243,236,0.8)" }}>PIN</span>
+              <PinDots value={pin} />
+            </div>
+            <Keypad value={pin} onChange={setPin} dark />
+            {err && <p style={S.errTxt}>{err}</p>}
+            <button style={{ ...S.btn, ...S.btnGold, width: "100%", marginTop: 10 }}
+              disabled={busy || !name.trim() || pin.length < 4} onClick={submit}>
+              {busy ? "Checking…" : "Sign in"}
+            </button>
+            <button style={{ ...S.btn, ...S.btnGhost, width: "100%", marginTop: 8 }}
+              onClick={() => { setStep(1); setBiz(null); setName(""); setPin(""); setErr(""); }}>
+              ← Different business
+            </button>
+          </>
+        )}
       </div>
     </div>
   );
@@ -863,8 +1057,10 @@ function ReceiptModal({ receipt, onClose }) {
       else { await navigator.clipboard.writeText(text); alert("Receipt copied — you can paste it into WhatsApp or SMS."); }
     } catch {}
   };
-  // Build a real PDF file (jsPDF) for this receipt
-  const makePdfBlob = () => {
+  // Build a real PDF file (jsPDF) for this receipt. jsPDF is loaded ON DEMAND
+  // (only when a PDF button is tapped) so the app opens fast on mobile data.
+  const makePdfBlob = async () => {
+    const { jsPDF } = await import("jspdf");
     const doc = new jsPDF({ unit: "pt", format: [300, 500] });
     let y = 40;
     doc.setFontSize(16); doc.setFont(undefined, "bold");
@@ -894,7 +1090,7 @@ function ReceiptModal({ receipt, onClose }) {
   };
 
   const sendPdf = async () => {
-    const blob = makePdfBlob();
+    const blob = await makePdfBlob();
     const file = new File([blob], `Receipt-${receipt.no}.pdf`, { type: "application/pdf" });
     // Try native file share (this is what carries the PDF into WhatsApp)
     if (navigator.canShare && navigator.canShare({ files: [file] })) {
