@@ -17,7 +17,7 @@ const SUPABASE_ANON_KEY =
   import.meta.env.VITE_SUPABASE_ANON_KEY || "YOUR-ANON-KEY";
 
 // Tiny REST client (no SDK needed — works inside an artifact)
-const sb = {
+export const sb = {
   async rpc(fn, args) {
     const r = await fetch(`${SUPABASE_URL}/rest/v1/rpc/${fn}`, {
       method: "POST",
@@ -145,9 +145,9 @@ async function flushPending(biz) {
 }
 
 const configured = !SUPABASE_URL.includes("YOUR-PROJECT");
-const money = (n) => "$" + Number(n || 0).toFixed(2);
+export const money = (n) => "$" + Number(n || 0).toFixed(2);
 // Unit price shown with full precision (trims trailing zeros): 0.475 -> $0.475
-const priceFmt = (n) => {
+export const priceFmt = (n) => {
   const num = Number(n || 0);
   let s = num.toFixed(4).replace(/0+$/, "").replace(/\.$/, "");
   if (!s.includes(".")) s = num.toFixed(2);
@@ -383,7 +383,7 @@ const WEEKLY_PRICE = 2;                 // US$ per week — change here if neede
 const ECOCASH_NUMBER = "+263 78 734 8881";
 
 export default function App() {
-  const [user, setUser] = useState(null); // {id,name,role,business_id}
+  const [user, setUser] = useState(null);
   const [bizList, setBizList] = useState([]); // full business rows incl paid_until
   const [sellMode, setSellMode] = useState(false); // admin temporarily selling
   const [tick, setTick] = useState(0); // force re-check after payment approval
@@ -397,7 +397,8 @@ export default function App() {
   bizList.forEach((b) => { bizNames[b.id] = b.name; });
 
   if (!configured) return <SetupNotice />;
-  if (!user) return <Login onLogin={setUser} />;
+  if (!user) return <AuthEntry onLogin={setUser} />;
+
   const businessName = bizNames[user.business_id] || `Business ${user.business_id}`;
 
   // Owner (super) login → payment approvals across all businesses
@@ -423,21 +424,133 @@ export default function App() {
     : <Seller user={user} businessName={businessName} onExit={() => setUser(null)} />;
 }
 
-// Distinctive brand mark used inside the gold badge — a "P" under a stall roof.
-function PamusikaMark({ size = 26 }) {
+// Distinctive brand mark used inside the gold badge — a stacked-diamond
+// emblem (three facets rising into one point), echoing the premium
+// fintech-style reference look rather than the earlier "P under a roof".
+export function PamusikaMark({ size = 26 }) {
+  // "P" monogram with a gold-diamond counter — reads clearly even at
+  // small (header-badge) sizes, unlike a generic gem/hexagon shape.
   return (
     <svg width={size} height={size} viewBox="0 0 48 48" fill="none" aria-hidden="true">
-      <path d="M8 18 L24 7 L40 18" stroke="#0c241d" strokeWidth="3" strokeLinejoin="round" strokeLinecap="round" fill="none" />
-      <path d="M17 40 L17 21 L27 21 Q33 21 33 27.5 Q33 34 27 34 L17 34"
-        stroke="#0c241d" strokeWidth="3.4" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+      <rect x="11" y="7" width="6" height="34" rx="3" fill="#0c241d" />
+      <path d="M17 7 H27 A11 11 0 0 1 27 29 H17 Z" fill="#0c241d" />
+      <path d="M27 12 L34.5 18 L27 24 L19.5 18 Z" fill="#E6C44D" />
     </svg>
   );
 }
 
 // ============================================================
-// 3. LOGIN (two-step: business name, then name + PIN)
+// 3. AUTH ENTRY — full-bleed photo front door: Sign in or Register
 // ============================================================
-function Login({ onLogin }) {
+function AuthEntry({ onLogin }) {
+  const [mode, setMode] = useState(null); // null | "signin" | "register"
+
+  if (mode === "signin") return <Login onLogin={onLogin} onBack={() => setMode(null)} />;
+  if (mode === "register") return <RegisterBusiness onLogin={onLogin} onBack={() => setMode(null)} />;
+
+  return (
+    <div style={{ position: "relative", minHeight: "100vh", overflow: "hidden" }}>
+      <div style={{
+        position: "fixed", inset: 0, backgroundColor: darkbg,
+        backgroundImage: "url(/login-hero.jpg)", backgroundSize: "88%", backgroundRepeat: "no-repeat",
+        backgroundPosition: "center 15%",
+      }} />
+      <div style={{
+        position: "fixed", inset: 0,
+        background: "linear-gradient(180deg, rgba(7,22,15,0.1) 0%, rgba(7,22,15,0.3) 45%, rgba(7,22,15,0.94) 88%)",
+      }} />
+      <div style={{
+        position: "relative", minHeight: "100vh", display: "flex", flexDirection: "column",
+        justifyContent: "flex-end", padding: 20, boxSizing: "border-box",
+      }}>
+        <div style={{ ...S.loginCard, maxWidth: 420, width: "100%" }}>
+          <div style={S.logoMark}><PamusikaMark size={30} /></div>
+          <h1 style={S.loginTitle}>Pamusika</h1>
+          <p style={S.loginSub}>Smart, simple stock and sales for your business.</p>
+          <button style={{ ...S.btn, ...S.btnGold, width: "100%", marginBottom: 10 }} onClick={() => setMode("signin")}>
+            Sign in
+          </button>
+          <button style={{ ...S.btn, ...S.btnGhost, width: "100%" }} onClick={() => setMode("register")}>
+            Register a new business
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// 3b. REGISTER — create a new business and become its admin
+// ============================================================
+function RegisterBusiness({ onLogin, onBack }) {
+  const [bizName, setBizName] = useState("");
+  const [ownerName, setOwnerName] = useState("");
+  const [pin, setPin] = useState("");
+  const [pin2, setPin2] = useState("");
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const submit = async () => {
+    setErr("");
+    if (!bizName.trim() || !ownerName.trim()) { setErr("Please fill in every field."); return; }
+    if (pin.length < 4) { setErr("PIN must be at least 4 digits."); return; }
+    if (pin !== pin2) { setErr("The PINs don't match."); return; }
+    setBusy(true);
+    try {
+      const rows = await sb.rpc("register_business", {
+        p_business_name: bizName.trim(), p_owner_name: ownerName.trim(), p_pin: pin,
+      });
+      if (rows && rows.length) onLogin(rows[0]);
+      else setErr("Something went wrong. Please try again.");
+    } catch (e) { setErr(e.message); }
+    setBusy(false);
+  };
+
+  return (
+    <div style={S.loginDarkShell}>
+      <MarketWatermark />
+      <div style={{ ...S.loginCard, position: "relative", zIndex: 1 }}>
+        <div style={S.logoMark}><PamusikaMark size={30} /></div>
+        <h1 style={S.loginTitle}>Register</h1>
+        <p style={S.loginSub}>Set up your business — you'll be its admin.</p>
+        <div style={S.fieldWrap}>
+          <span style={{ ...S.fieldLabel, color: "rgba(234,243,236,0.8)" }}>Business name</span>
+          <input style={S.inputDark} value={bizName} autoFocus onChange={(e) => setBizName(e.target.value)}
+            placeholder="e.g. Samah Valley" />
+        </div>
+        <div style={S.fieldWrap}>
+          <span style={{ ...S.fieldLabel, color: "rgba(234,243,236,0.8)" }}>Your name</span>
+          <input style={S.inputDark} value={ownerName} onChange={(e) => setOwnerName(e.target.value)}
+            placeholder="Your name" />
+        </div>
+        <div style={S.fieldWrap}>
+          <span style={{ ...S.fieldLabel, color: "rgba(234,243,236,0.8)" }}>PIN (4 digits)</span>
+          <input style={S.inputDark} value={pin} onChange={(e) => setPin(e.target.value.replace(/\D/g, "").slice(0, 4))}
+            inputMode="numeric" placeholder="••••" />
+        </div>
+        <div style={S.fieldWrap}>
+          <span style={{ ...S.fieldLabel, color: "rgba(234,243,236,0.8)" }}>Type it again</span>
+          <input style={S.inputDark} value={pin2} onChange={(e) => setPin2(e.target.value.replace(/\D/g, "").slice(0, 4))}
+            inputMode="numeric" placeholder="••••" />
+        </div>
+        {err && <p style={S.errTxt}>{err}</p>}
+        <button style={{ ...S.btn, ...S.btnGold, width: "100%", marginTop: 10 }}
+          disabled={busy || !bizName.trim() || !ownerName.trim() || pin.length < 4}
+          onClick={submit}>
+          {busy ? "Creating…" : "Create business"}
+        </button>
+        <button style={{ ...S.btn, ...S.btnGhost, width: "100%", marginTop: 8 }} onClick={onBack}>
+          ← Back
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// 4. LOGIN (two-step: business name, then name + PIN)
+// ============================================================
+function Login({ onLogin, onBack }) {
   const [step, setStep] = useState(1);
   const [bizInput, setBizInput] = useState("");
   const [biz, setBiz] = useState(null); // {id, name}
@@ -489,6 +602,11 @@ function Login({ onLogin }) {
               disabled={busy || !bizInput.trim()} onClick={findBiz}>
               {busy ? "Checking…" : "Continue"}
             </button>
+            {onBack && (
+              <button style={{ ...S.btn, ...S.btnGhost, width: "100%", marginTop: 10 }} onClick={onBack}>
+                ← Back
+              </button>
+            )}
           </>
         ) : (
           <>
@@ -619,10 +737,11 @@ function useData(businessId) {
 // ============================================================
 // 5. ADMIN
 // ============================================================
-function Admin({ user, onExit, businessName, onSell }) {
+export function Admin({ user, onExit, businessName, onSell }) {
   const { products, sales, loading, error, refresh } = useData(user.business_id);
   const [tab, setTab] = useState("overview");
   const [cats, setCats] = useState([]);   // this business's category names
+  const [hasIncomingOrders, setHasIncomingOrders] = useState(false);
 
   const loadCats = useCallback(async () => {
     try {
@@ -631,6 +750,24 @@ function Admin({ user, onExit, businessName, onSell }) {
     } catch { setCats([]); }
   }, [user.business_id]);
   useEffect(() => { loadCats(); }, [loadCats]);
+
+  // The "Orders" (incoming) tab only appears once this business is someone's
+  // agent — either they've already ordered, or they've just linked us as
+  // their supplier and haven't ordered yet (so they can still be messaged
+  // first). Most shops are never anyone's agent, so it stays hidden for them.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const [rows, links] = await Promise.all([
+          sb.select("order_requests", `supplier_business_id=eq.${user.business_id}&select=id&limit=1`),
+          sb.select("business_supplier_links", `supplier_business_id=eq.${user.business_id}&select=business_id&limit=1`).catch(() => []),
+        ]);
+        if (!cancelled) setHasIncomingOrders(rows.length > 0 || links.length > 0);
+      } catch { /* table may not exist yet on older deployments — fail quiet */ }
+    })();
+    return () => { cancelled = true; };
+  }, [user.business_id]);
 
   const totalSales = sales.reduce((a, x) => a + Number(x.total), 0);
   const totalTithe = sales.reduce((a, x) => a + Number(x.tithe), 0);
@@ -655,10 +792,8 @@ function Admin({ user, onExit, businessName, onSell }) {
     } catch (e) { alert(e.message); }
   };
 
-  return (
-    <div style={S.shell}>
-      <LightWatermark />
-      <Header title={businessName} sub={`${user.name} · Admin`} onExit={onExit} onRefresh={refresh} />
+  const alerts = (
+    <>
       {error && <div style={S.alert}><AlertTriangle size={16} /> {error}</div>}
       {out.length > 0 && (
         <div style={{ ...S.alert, background: "#FFE2E2", color: "#C0392B" }}>
@@ -672,45 +807,59 @@ function Admin({ user, onExit, businessName, onSell }) {
           <span><b>{low.length}</b> item{low.length > 1 ? "s" : ""} running low — time to reorder.</span>
         </div>
       )}
-      <Tabs tab={tab} setTab={setTab} items={[
-        ["overview","Overview"],["stock","Stock"],["transactions","Sales"],["order","Order"],["customers","Customers"],["compare","Compare"],["cashups","Cash-ups"],["report","Tuesday report"],["team","Team"],
-      ]} />
-      <div style={S.body}>
-        {loading ? <Loading /> : <>
-          {tab === "overview" && <>
-            {onSell && (
-              <button style={{ ...S.btn, ...S.btnGold, width: "100%", marginBottom: 14 }} onClick={onSell}>
-                <ShoppingCart size={18} /> Make a sale
-              </button>
-            )}
-            <div style={S.statGrid}>
-              <Stat icon={<TrendingUp size={16} />} label="Sales today" value={money(daySales)} accent delay={0} />
-              <Stat icon={<Wallet size={16} />} label="Cash today" value={money(dayCash)} tint={mango} delay={0.05} />
-              <Stat icon={<Church size={16} />} label="To God today" value={money(dayTithe)} tint={grape} delay={0.1} />
-              <Stat icon={<Package size={16} />} label="Items in stock" value={products.reduce((a,p)=>a+p.qty,0)} tint={sky} delay={0.15} />
-            </div>
-            <SectionTitle>Today's sales</SectionTitle>
-            <p style={S.hint}>Tap the ✕ to remove a sale — its stock is returned automatically.</p>
-            <SalesList sales={todaySales.slice(0,30)} showSeller onDelete={deleteSale} showTithe />
-          </>}
-          {tab === "stock" && <StockManager products={products} onChange={refresh} businessId={user.business_id} cats={cats} onCatsChange={loadCats} />}
-          {tab === "transactions" && <Transactions sales={sales} products={products} businessId={user.business_id} onChange={refresh} onDeleteSale={deleteSale} cats={cats} />}
-          {tab === "order" && <OrderList products={products} sales={sales} businessName={businessName} />}
-          {tab === "customers" && <Customers sales={sales} />}
-          {tab === "compare" && <Compare sales={sales} />}
-          {tab === "cashups" && <CashUps businessId={user.business_id} sales={sales} />}
-          {tab === "report" && <Report sales={sales} products={products} low={[...out, ...low]} cats={cats} />}
-          {tab === "team" && <TeamManager onChange={refresh} businessId={user.business_id} sales={sales} user={user} />}
+    </>
+  );
+
+  return (
+    <AppShell
+      title={businessName} subtitle={`${user.name} · Admin`} icon={<PamusikaMark size={20} />}
+      tab={tab} setTab={setTab}
+      items={[
+        ["overview","Overview"],["stock","Stock"],["transactions","Sales"],["order","Order"],
+        ...(hasIncomingOrders ? [["supplierOrders","Orders"]] : []),
+        ["community","Community"],
+        ["customers","Customers"],["compare","Compare"],["cashups","Cash-ups"],["report","Tuesday report"],["team","Team"],
+      ]}
+      onExit={onExit} onRefresh={refresh}
+      decoration={<LightWatermark />}
+      alerts={alerts}
+    >
+      {loading ? <Loading /> : <>
+        {tab === "overview" && <>
+          {onSell && (
+            <button style={{ ...S.btn, ...S.btnGold, width: "100%", marginBottom: 14 }} onClick={onSell}>
+              <ShoppingCart size={18} /> Make a sale
+            </button>
+          )}
+          <div className="pk-statgrid" style={S.statGrid}>
+            <Stat icon={<TrendingUp size={16} />} label="Sales today" value={money(daySales)} accent delay={0} />
+            <Stat icon={<Wallet size={16} />} label="Cash today" value={money(dayCash)} tint={mango} delay={0.05} />
+            <Stat icon={<Church size={16} />} label="To God today" value={money(dayTithe)} tint={grape} delay={0.1} />
+            <Stat icon={<Package size={16} />} label="Items in stock" value={products.reduce((a,p)=>a+p.qty,0)} tint={sky} delay={0.15} />
+          </div>
+          <SectionTitle>Today's sales</SectionTitle>
+          <p style={S.hint}>Tap the ✕ to remove a sale — its stock is returned automatically.</p>
+          <SalesList sales={todaySales.slice(0,30)} showSeller onDelete={deleteSale} showTithe />
         </>}
-      </div>
-    </div>
+        {tab === "stock" && <StockManager products={products} onChange={refresh} businessId={user.business_id} cats={cats} onCatsChange={loadCats} />}
+        {tab === "transactions" && <Transactions sales={sales} products={products} businessId={user.business_id} onChange={refresh} onDeleteSale={deleteSale} cats={cats} />}
+        {tab === "order" && <OrderList products={products} sales={sales} businessName={businessName} businessId={user.business_id} />}
+        {tab === "supplierOrders" && <OrdersInbox businessId={user.business_id} />}
+        {tab === "community" && <CommunityChat businessId={user.business_id} businessName={businessName} />}
+        {tab === "customers" && <Customers sales={sales} />}
+        {tab === "compare" && <Compare sales={sales} />}
+        {tab === "cashups" && <CashUps businessId={user.business_id} sales={sales} />}
+        {tab === "report" && <Report sales={sales} products={products} low={[...out, ...low]} cats={cats} />}
+        {tab === "team" && <TeamManager onChange={refresh} businessId={user.business_id} sales={sales} user={user} />}
+      </>}
+    </AppShell>
   );
 }
 
 // ============================================================
 // 6. SELLER
 // ============================================================
-function Seller({ user, onExit, businessName, sellMode }) {
+export function Seller({ user, onExit, businessName, sellMode }) {
   const { products, sales, loading, error, refresh, online, pending, setPendingCount } = useData(user.business_id);
   const [toast, setToast] = useState("");
   const [adding, setAdding] = useState(null);   // product being added to cart
@@ -812,9 +961,14 @@ function Seller({ user, onExit, businessName, sellMode }) {
   };
 
   const shown = filterProducts(products, search);
+  // Seller is a single continuous flow (no tabs), so it doesn't get the
+  // sidebar shell used by Admin/ChurchApp — on a wide viewport it just
+  // widens its column and lets the product list flow into a grid instead
+  // of a single stack (see .pk-shopgrid below).
+  const isDesktop = useIsDesktop();
 
   return (
-    <div style={S.shell}>
+    <div style={{ ...S.shell, ...(isDesktop ? { maxWidth: 980 } : {}) }}>
       <LightWatermark />
       <Header title={user.name} sub={sellMode ? `${businessName} · Selling` : `${businessName} · Seller`} onExit={onExit} onRefresh={refresh} exitLabel={sellMode ? "Back to admin" : undefined} />
       {error && <div style={S.alert}><AlertTriangle size={16} /> {error}</div>}
@@ -832,7 +986,7 @@ function Seller({ user, onExit, businessName, sellMode }) {
       )}
       <div style={S.body}>
         {loading ? <Loading /> : <>
-          <div style={S.statGrid}>
+          <div className="pk-statgrid" style={S.statGrid}>
             <Stat icon={<TrendingUp size={16} />} label="My sales today" value={money(myTotal)} accent />
             <button onClick={() => setShowTx(true)}
               style={{ ...S.stat, textAlign: "left", cursor: "pointer", border: `1px solid ${line}`, position: "relative" }}>
@@ -848,7 +1002,7 @@ function Seller({ user, onExit, businessName, sellMode }) {
           <SectionTitle>New sale</SectionTitle>
           <p style={S.hint}>Tap items to add to the basket, then check out as one receipt.</p>
           <SearchBar value={search} onChange={setSearch} />
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <div className="pk-shopgrid">
             {products.length === 0 && <p style={S.empty}>No products yet. Ask the admin to add stock.</p>}
             {products.length > 0 && shown.length === 0 && <p style={S.empty}>No products match “{search}”.</p>}
             {shown.map((p) => {
@@ -1478,7 +1632,7 @@ function AddExpenseModal({ onClose, onAdd }) {
   );
 }
 
-function localDateStr(d) {
+export function localDateStr(d) {
   return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
 }
 
@@ -1577,7 +1731,7 @@ function StockEditPopup({ product, box, onSet, onClose }) {
 }
 
 // Left slide-out menu for switching product categories + stock actions
-function CategorySidebar({ open, onClose, current, onPick, counts, cats = [], onAdd, onBulk, onManageCats }) {
+function CategorySidebar({ open, onClose, current, onPick, counts, cats = [], onAdd, onBulk, onSelectSupplier, onManageCats }) {
   if (!open) return null;
   const items = ["All", ...cats];
   return (
@@ -1612,6 +1766,7 @@ function CategorySidebar({ open, onClose, current, onPick, counts, cats = [], on
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           {onAdd && <button style={{ ...S.btn, ...S.btnGold, width: "100%" }} onClick={onAdd}><Plus size={17} /> Add product</button>}
           {onBulk && <button style={{ ...S.btn, ...S.btnGhost, width: "100%" }} onClick={onBulk}><FileText size={16} /> Bulk add from list</button>}
+          {onSelectSupplier && <button style={{ ...S.btn, ...S.btnGhost, width: "100%" }} onClick={onSelectSupplier}><Check size={16} /> Select products → assign supplier</button>}
           {onManageCats && <button style={{ ...S.btn, ...S.btnGhost, width: "100%" }} onClick={onManageCats}><Pencil size={15} /> Manage categories</button>}
         </div>
       </div>
@@ -1671,6 +1826,11 @@ function StockManager({ products, onChange, businessId, cats = [], onCatsChange 
   const [more, setMore] = useState(false);
   const [f, setF] = useState({ name: "", price: "", pct: "", packs: "", units: "", pack_size: "1", low: "5", category: cats[0] || "" });
   const [busy, setBusy] = useState(false);
+  // Bulk "tick products, assign one supplier" mode — independent of `bulk`
+  // (that's the paste-a-price-list add flow, a different feature).
+  const [selectMode, setSelectMode] = useState(false);
+  const [selected, setSelected] = useState(() => new Set());
+  const [assigningSupplier, setAssigningSupplier] = useState(false);
 
   const add = async () => {
     if (!f.name.trim() || f.price === "") return;
@@ -1718,6 +1878,28 @@ function StockManager({ products, onChange, businessId, cats = [], onCatsChange 
     await onChange();
   };
 
+  const toggleSelected = (id) => setSelected((prev) => {
+    const next = new Set(prev);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
+  // One PATCH with an id=in.(...) filter — sb.patch(table, query, row) just
+  // forwards `query` straight onto the PostgREST URL, and PostgREST accepts
+  // the same `in.(...)` filter on PATCH as it does on GET, so this applies
+  // to every ticked product in a single request instead of N round-trips.
+  const applyBulkSupplier = async (chosen) => {
+    const ids = [...selected];
+    if (ids.length === 0) return;
+    await sb.patch("products", `id=in.(${ids.join(",")})`, {
+      supplier_business_id: chosen.isDefault ? null : chosen.supplier_business_id,
+      supplier_name: chosen.isDefault ? null : chosen.supplier_name,
+      supplier_phone: chosen.isDefault ? null : chosen.supplier_phone,
+    });
+    setAssigningSupplier(false);
+    setSelected(new Set());   // ticks cleared, select mode stays open for the next batch
+    await onChange();
+  };
+
   const byCat = cat === "All" ? products : products.filter((p) => (p.category || "Uncategorised") === cat);
   const shown = filterProducts(byCat, search);
   const catCount = (c) => products.filter((p) => (p.category || "Uncategorised") === c).length;
@@ -1730,13 +1912,28 @@ function StockManager({ products, onChange, businessId, cats = [], onCatsChange 
         cats={CATS}
         onAdd={() => { setMenuOpen(false); setOpen(true); }}
         onBulk={() => { setMenuOpen(false); setBulk(true); }}
+        onSelectSupplier={() => { setMenuOpen(false); setSelectMode(true); }}
         onManageCats={() => { setMenuOpen(false); setManageCats(true); }} />
 
-      <button onClick={() => setMenuOpen(true)}
-        style={{ ...S.btn, ...S.btnGhost, width: "100%", marginBottom: 12, justifyContent: "space-between" }}>
-        <span style={{ display: "flex", alignItems: "center", gap: 8 }}><Menu size={18} /> {cat === "All" ? "All products" : cat}</span>
-        <span style={{ color: muted, fontSize: 12 }}>menu ›</span>
-      </button>
+      {selectMode ? (
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 12 }}>
+          <span style={{ ...S.cardName, fontSize: 14 }}>{selected.size} selected</span>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button style={{ ...S.btn, ...S.btnGhost, padding: "9px 12px", fontSize: 13 }}
+              onClick={() => { setSelectMode(false); setSelected(new Set()); }}>Done</button>
+            <button style={{ ...S.btn, ...S.btnDark, padding: "9px 12px", fontSize: 13 }}
+              disabled={selected.size === 0} onClick={() => setAssigningSupplier(true)}>
+              Assign supplier{selected.size ? ` (${selected.size})` : ""}
+            </button>
+          </div>
+        </div>
+      ) : (
+        <button onClick={() => setMenuOpen(true)}
+          style={{ ...S.btn, ...S.btnGhost, width: "100%", marginBottom: 12, justifyContent: "space-between" }}>
+          <span style={{ display: "flex", alignItems: "center", gap: 8 }}><Menu size={18} /> {cat === "All" ? "All products" : cat}</span>
+          <span style={{ color: muted, fontSize: 12 }}>menu ›</span>
+        </button>
+      )}
 
       {products.length > 0 && <SearchBar value={search} onChange={setSearch} />}
       {products.length === 0 && <p style={S.empty}>No products yet. Open the menu ≡ and tap “Add product”.</p>}
@@ -1744,15 +1941,23 @@ function StockManager({ products, onChange, businessId, cats = [], onCatsChange 
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {shown.map((p) => {
           const ps = p.pack_size || 1;
+          const isSel = selected.has(p.id);
           return (
-            <div key={p.id} style={S.card}>
+            <div key={p.id} style={{ ...S.card, ...(selectMode && isSel ? S.cardInCart : {}), cursor: selectMode ? "pointer" : "default" }}
+              onClick={selectMode ? () => toggleSelected(p.id) : undefined}>
+              {selectMode && (
+                <div style={{ width: 22, height: 22, borderRadius: 6, flexShrink: 0, display: "grid", placeItems: "center",
+                  border: `1px solid ${isSel ? accent : line}`, background: isSel ? accent : "transparent" }}>
+                  {isSel && <Check size={14} color="#fff" />}
+                </div>
+              )}
               <div style={{ flex: 1 }}>
                 <div style={S.cardName}>{p.name} {p.qty <= 0 ? <span style={S.outTag}>out — restock</span> : p.qty <= p.low_at ? <span style={S.lowTag}>low</span> : null}</div>
                 <div style={S.cardMeta}>{priceFmt(p.price)}/pack · {p.tithe_pct}% to God{ps > 1 ? ` · pack of ${ps}` : ""}{p.category ? <> · <span style={{ color: goldLt }}>{p.category}</span></> : ""}</div>
                 <div style={{ ...S.cardMeta, color: p.qty <= 0 ? "#C0392B" : "#1F9D55", fontWeight: 600 }}>{p.qty <= 0 ? `${p.qty} packs — out of stock` : stockLabel(p)}</div>
               </div>
-              <StockEditor product={p} onSet={(v) => setStock(p, v)} />
-              <button style={S.editBtn} onClick={() => setEditing(p)}><Pencil size={15} /></button>
+              {!selectMode && <StockEditor product={p} onSet={(v) => setStock(p, v)} />}
+              {!selectMode && <button style={S.editBtn} onClick={() => setEditing(p)}><Pencil size={15} /></button>}
             </div>
           );
         })}
@@ -1788,7 +1993,39 @@ function StockManager({ products, onChange, businessId, cats = [], onCatsChange 
       {editing && <EditProductModal product={editing} cats={CATS} onClose={() => setEditing(null)} onSave={saveEdit} onDelete={async () => { await remove(editing.id); setEditing(null); }} />}
       {manageCats && <ManageCategories businessId={businessId} cats={CATS} onClose={() => setManageCats(false)} onChange={onCatsChange} />}
       {bulk && <BulkAddModal businessId={businessId} onClose={() => setBulk(false)} onDone={async () => { setBulk(false); await onChange(); }} />}
+      {assigningSupplier && (
+        <BulkAssignSupplierModal count={selected.size} onClose={() => setAssigningSupplier(false)} onApply={applyBulkSupplier} />
+      )}
     </>
+  );
+}
+
+// Bulk mode's supplier picker — same SupplierPicker as EditProductModal's
+// per-product override, just applied to every ticked product at once.
+function BulkAssignSupplierModal({ count, onClose, onApply }) {
+  const [current, setCurrent] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const valid = current && (current.isDefault || current.supplier_business_id || current.supplier_name);
+
+  const apply = async () => {
+    if (!valid) return;
+    setBusy(true);
+    try { await onApply(current); }
+    catch (e) { alert(e.message); }
+    setBusy(false);
+  };
+
+  return (
+    <Modal onClose={onClose} title={`Assign supplier to ${count} product${count === 1 ? "" : "s"}`}>
+      <p style={{ ...S.hint, marginTop: 0 }}>
+        Search an existing business, save a free-text agent, or choose “Use default” to clear these products'
+        overrides back to your business's default agent — applied to all {count} ticked product{count === 1 ? "" : "s"} at once.
+      </p>
+      <SupplierPicker allowDefault onChange={setCurrent} />
+      <button style={{ ...S.btn, ...S.btnDark, width: "100%", marginTop: 10 }} disabled={busy || !valid} onClick={apply}>
+        <Check size={17} /> {busy ? "Applying…" : `Apply to ${count} product${count === 1 ? "" : "s"}`}
+      </button>
+    </Modal>
   );
 }
 
@@ -1879,6 +2116,13 @@ function EditProductModal({ product, cats = [], onClose, onSave, onDelete }) {
   const [low, setLow] = useState(String(product.low_at));
   const [orderBox, setOrderBox] = useState(String(product.order_box || 1));
   const [category, setCategory] = useState(product.category || "Uncategorised");
+  const [supplierOpen, setSupplierOpen] = useState(!!(product.supplier_business_id || product.supplier_name));
+  const [supplierOverride, setSupplierOverride] = useState({
+    supplier_business_id: product.supplier_business_id || null,
+    supplier_name: product.supplier_name || null,
+    supplier_phone: product.supplier_phone || null,
+    isDefault: !(product.supplier_business_id || product.supplier_name),
+  });
   const [busy, setBusy] = useState(false);
   const [confirmDel, setConfirmDel] = useState(false);
   const [confirmText, setConfirmText] = useState("");
@@ -1894,6 +2138,13 @@ function EditProductModal({ product, cats = [], onClose, onSave, onDelete }) {
       low_at: parseInt(low) || 5,
       order_box: Math.max(1, parseInt(orderBox) || 1),
       category,
+      // Blank/"use default" always clears the override, even if the picker
+      // was left mid-edit (e.g. "Not on the app" tab with no name typed) —
+      // an incomplete override silently falls back to the business default
+      // rather than blocking the rest of the product edit from saving.
+      supplier_business_id: supplierOverride.isDefault ? null : supplierOverride.supplier_business_id,
+      supplier_name: supplierOverride.isDefault ? null : supplierOverride.supplier_name,
+      supplier_phone: supplierOverride.isDefault ? null : supplierOverride.supplier_phone,
     });
     setBusy(false);
   };
@@ -1913,6 +2164,21 @@ function EditProductModal({ product, cats = [], onClose, onSave, onDelete }) {
       </label>
       <Field label="Warn me when units drop to" value={low} onChange={setLow} type="number" />
       <Field label="Order box size (how many you sell per box you buy — 1 if sold as-is)" value={orderBox} onChange={setOrderBox} type="number" />
+
+      <button onClick={() => setSupplierOpen(!supplierOpen)}
+        style={{ ...S.btn, ...S.btnGhost, width: "100%", marginTop: 4, justifyContent: "space-between" }}>
+        <span>Supplier for this product{!supplierOverride.isDefault ? " (set)" : ""}</span><span style={{ color: muted }}>{supplierOpen ? "▲" : "▼"}</span>
+      </button>
+      {supplierOpen && <div style={{ marginTop: 8 }}>
+        <p style={{ ...S.hint, marginTop: 0 }}>
+          Only needed if this product comes from a different agent than your usual one. Leave on “Use default” to
+          keep ordering it from your business's default agent.
+        </p>
+        <SupplierPicker allowDefault
+          initialBusinessId={product.supplier_business_id} initialName={product.supplier_name} initialPhone={product.supplier_phone}
+          onChange={setSupplierOverride} />
+      </div>}
+
       <p style={{ ...S.hint, marginBottom: 4 }}>To change quantity, tap the stock number on the list and type it.</p>
       <button style={{ ...S.btn, ...S.btnDark, width: "100%", marginTop: 4 }} disabled={busy} onClick={save}>
         <Check size={18} /> {busy ? "Saving…" : "Save changes"}
@@ -2547,11 +2813,9 @@ function EditCashUpModal({ report, onClose, onSave, onDelete }) {
   );
 }
 
-// Procurement / reorder list — suggests quantities from last 7 days of sales
-function OrderList({ products, sales, businessName }) {
-  const [qtys, setQtys] = useState({});   // productId -> adjusted order qty
-  const [copied, setCopied] = useState(false);
-
+// Reorder-suggestion math, standalone so both the local share/PDF flow and the
+// in-app "send to agent" flow compute the exact same numbers.
+export function computeReorderSuggestions(products, sales) {
   // Sales in the last 7 days, per product name
   const weekAgo = Date.now() - 7 * 86400000;
   const soldLastWeek = {};
@@ -2562,7 +2826,7 @@ function OrderList({ products, sales, businessName }) {
   });
 
   // Items at or below their low level
-  const items = products
+  return products
     .filter((p) => p.qty <= p.low_at)
     .map((p) => {
       const box = Math.max(1, p.order_box || 1);   // selling-units per order-box
@@ -2576,11 +2840,97 @@ function OrderList({ products, sales, businessName }) {
       return { p, sold, box, loose, propose: proposeBoxes };
     })
     .sort((a, b) => (a.p.category || "").localeCompare(b.p.category || "") || a.p.name.localeCompare(b.p.name));
+}
+
+async function fetchSupplierLink(businessId) {
+  try {
+    const rows = await sb.select("business_supplier_links", `business_id=eq.${businessId}`);
+    return rows[0] || null;
+  } catch { return null; } // table may not exist yet on older deployments
+}
+async function saveSupplierLink(businessId, fields) {
+  const existing = await sb.select("business_supplier_links", `business_id=eq.${businessId}`).catch(() => []);
+  const row = { ...fields, updated_at: new Date().toISOString() };
+  if (existing.length) return sb.patch("business_supplier_links", `business_id=eq.${businessId}`, row);
+  return sb.insert("business_supplier_links", { business_id: businessId, ...row });
+}
+
+// A product's own supplier if it has one, else the business's default link
+// (already-loaded `business_supplier_links` row) — a product with no
+// override just inherits whatever the business has set as default, same as
+// before this feature existed.
+function effectiveSupplierFor(p, link) {
+  if (p.supplier_business_id || p.supplier_name) {
+    return { supplier_business_id: p.supplier_business_id || null, supplier_name: p.supplier_name || "", supplier_phone: p.supplier_phone || null };
+  }
+  if (link && (link.supplier_business_id || link.supplier_name)) {
+    return { supplier_business_id: link.supplier_business_id || null, supplier_name: link.supplier_name || "", supplier_phone: link.supplier_phone || null };
+  }
+  return null;
+}
+// Group key: a registered business groups by id (its name can change), a
+// free-text agent groups by name+phone (no id to key on), and items with no
+// supplier at all share a single "none" group.
+function supplierGroupKey(eff) {
+  if (!eff) return "none";
+  if (eff.supplier_business_id) return `biz:${eff.supplier_business_id}`;
+  if (eff.supplier_name) return `text:${eff.supplier_name}|${eff.supplier_phone || ""}`;
+  return "none";
+}
+
+// Procurement / reorder list — suggests quantities from last 7 days of sales
+function OrderList({ products, sales, businessName, businessId }) {
+  const [qtys, setQtys] = useState({});   // productId -> adjusted order qty
+  const [copied, setCopied] = useState(false);
+  const [link, setLink] = useState(null);          // business_supplier_links row, or null
+  const [supplierName, setSupplierName] = useState("");
+  const [editingLink, setEditingLink] = useState(false);
+  const [sendingGroupKey, setSendingGroupKey] = useState(null);
+  const [chatOpen, setChatOpen] = useState(false);
+
+  const loadLink = useCallback(async () => {
+    const row = await fetchSupplierLink(businessId);
+    setLink(row);
+    if (row && row.supplier_business_id) {
+      try {
+        const biz = await sb.select("businesses", `id=eq.${row.supplier_business_id}&select=name`);
+        setSupplierName((biz[0] || {}).name || row.supplier_name || "");
+      } catch { setSupplierName(row.supplier_name || ""); }
+    } else {
+      setSupplierName(row ? (row.supplier_name || "") : "");
+    }
+  }, [businessId]);
+  useEffect(() => { if (businessId) loadLink(); }, [businessId, loadLink]);
+
+  const items = computeReorderSuggestions(products, sales);
 
   const orderQty = (it) => (qtys[it.p.id] !== undefined ? qtys[it.p.id] : it.propose);  // in BOXES
   const setQty = (id, v) => setQtys((prev) => ({ ...prev, [id]: Math.max(0, parseInt(v) || 0) }));
 
   const toOrder = items.filter((it) => orderQty(it) > 0);
+
+  // The default-link group displays the freshly-looked-up `supplierName`
+  // (kept current if the linked business renamed itself); a per-product
+  // override displays its own cached `supplier_name` label as saved at
+  // pick time, same as business_supplier_links already does — no extra
+  // per-group business lookups.
+  const groups = {};
+  items.forEach((it) => {
+    const hasOverride = !!(it.p.supplier_business_id || it.p.supplier_name);
+    let eff = effectiveSupplierFor(it.p, link);
+    if (eff && !hasOverride && supplierName) eff = { ...eff, supplier_name: supplierName };
+    const key = supplierGroupKey(eff);
+    if (!groups[key]) groups[key] = { key, supplier: eff, items: [] };
+    groups[key].items.push(it);
+  });
+  // Registered/free-text supplier groups first, the unassigned "none" group last
+  const groupList = Object.values(groups).sort((a, b) => {
+    if (a.key === "none") return 1;
+    if (b.key === "none") return -1;
+    return (a.supplier.supplier_name || "").localeCompare(b.supplier.supplier_name || "");
+  });
+  const groupAgentName = (g) => g.supplier.supplier_name || (g.supplier.supplier_business_id ? `Business ${g.supplier.supplier_business_id}` : "agent");
+  const groupToOrder = (g) => g.items.filter((it) => orderQty(it) > 0);
 
   // Human label for a line, e.g. "2 boxes of 24" or just "3" when box size is 1
   const lineLabel = (it) => {
@@ -2629,27 +2979,66 @@ function OrderList({ products, sales, businessName }) {
     w.document.close();
   };
 
+  const sendingGroup = sendingGroupKey ? groups[sendingGroupKey] : null;
+
   return (
     <>
-      <SectionTitle>Order list (for Harare)</SectionTitle>
-      <p style={S.hint}>Shows items at or below their low-stock level. Suggestions come from last 7 days of sales and are shown in BOXES (set each product’s box size in its edit screen). Adjust any number, then share.</p>
+      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
+        <SectionTitle>Order list</SectionTitle>
+        <div style={{ display: "flex", gap: 8 }}>
+          {link && link.supplier_business_id && (
+            <button style={{ ...S.btn, ...S.btnGhost, padding: "6px 10px", fontSize: 12.5 }} onClick={() => setChatOpen(true)}>
+              <Send size={13} /> Chat with {supplierName || "agent"}
+            </button>
+          )}
+          <button style={{ ...S.btn, ...S.btnGhost, padding: "6px 10px", fontSize: 12.5 }} onClick={() => setEditingLink(true)}>
+            <Pencil size={13} /> {supplierName ? "Change agent" : "Set your agent"}
+          </button>
+        </div>
+      </div>
+      <p style={S.hint}>
+        Shows items at or below their low-stock level, grouped by supplier — a product's own supplier if you've set
+        one for it in its edit screen, otherwise your business's default agent{supplierName ? ` (${supplierName})` : ""}.
+        Suggestions come from last 7 days of sales and are shown in BOXES (set each product's box size in its edit
+        screen). Adjust any number, then send each group, or use Share/PDF below for the full list.
+      </p>
 
       {items.length === 0 && <p style={S.empty}>Nothing is low right now. 🎉</p>}
-      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        {items.map((it) => (
-          <div key={it.p.id} style={S.card}>
-            <div style={{ flex: 1 }}>
-              <div style={S.cardName}>{it.p.name} {it.p.category && <span style={{ ...S.cardMeta, color: goldLt }}>{it.p.category}</span>}</div>
-              <div style={S.cardMeta}>
-                sold {it.sold} last week · {it.p.qty} left
-                {it.box > 1 ? ` → ${it.loose} needed = ${it.propose} box${it.propose === 1 ? "" : "es"} of ${it.box}` : ` → suggest ${it.propose}`}
-              </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+        {groupList.map((g) => (
+          <div key={g.key}>
+            <div style={{ ...S.cardName, marginBottom: 8 }}>
+              {g.supplier ? `For ${groupAgentName(g)}` : "No supplier set — set one below to send this group directly."}
             </div>
-            <div style={{ textAlign: "center" }}>
-              <input style={{ ...S.input, width: 64, textAlign: "center", fontWeight: 800 }} type="number"
-                value={orderQty(it)} onChange={(e) => setQty(it.p.id, e.target.value)} />
-              <div style={{ fontSize: 10, color: muted, marginTop: 2 }}>{it.box > 1 ? "boxes" : "qty"}</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {g.items.map((it) => (
+                <div key={it.p.id} style={S.card}>
+                  <div style={{ flex: 1 }}>
+                    <div style={S.cardName}>{it.p.name} {it.p.category && <span style={{ ...S.cardMeta, color: goldLt }}>{it.p.category}</span>}</div>
+                    <div style={S.cardMeta}>
+                      sold {it.sold} last week · {it.p.qty} left
+                      {it.box > 1 ? ` → ${it.loose} needed = ${it.propose} box${it.propose === 1 ? "" : "es"} of ${it.box}` : ` → suggest ${it.propose}`}
+                    </div>
+                  </div>
+                  <div style={{ textAlign: "center" }}>
+                    <input style={{ ...S.input, width: 64, textAlign: "center", fontWeight: 800 }} type="number"
+                      value={orderQty(it)} onChange={(e) => setQty(it.p.id, e.target.value)} />
+                    <div style={{ fontSize: 10, color: muted, marginTop: 2 }}>{it.box > 1 ? "boxes" : "qty"}</div>
+                  </div>
+                </div>
+              ))}
             </div>
+            {g.supplier ? (
+              <button style={{ ...S.btn, ...S.btnDark, width: "100%", marginTop: 8, background: `linear-gradient(135deg,${sky},#1E7FAE)` }}
+                onClick={() => setSendingGroupKey(g.key)}>
+                <ShoppingCart size={16} /> {g.supplier.supplier_business_id ? `Message ${groupAgentName(g)}` : `Order via WhatsApp — ${groupAgentName(g)}`}
+              </button>
+            ) : (
+              <p style={S.hint}>
+                Set your business's default agent above ("Set your agent"), or open one of these products' edit
+                screen and set a supplier just for it.
+              </p>
+            )}
           </div>
         ))}
       </div>
@@ -2664,7 +3053,808 @@ function OrderList({ products, sales, businessName }) {
           </button>
         </div>
       )}
+
+      {editingLink && (
+        <SupplierLinkModal businessId={businessId} link={link} onClose={() => setEditingLink(false)}
+          onSaved={async () => { setEditingLink(false); await loadLink(); }} />
+      )}
+      {sendingGroup && (
+        <SupplierThreadModal businessId={businessId} businessName={businessName}
+          link={{ supplier_business_id: sendingGroup.supplier.supplier_business_id, supplier_phone: sendingGroup.supplier.supplier_phone }}
+          supplierName={groupAgentName(sendingGroup)}
+          items={groupToOrder(sendingGroup)} onClose={() => setSendingGroupKey(null)} />
+      )}
+      {chatOpen && (
+        <SupplierThreadModal businessId={businessId} businessName={businessName}
+          link={link} supplierName={supplierName} items={[]} onClose={() => setChatOpen(false)} />
+      )}
     </>
+  );
+}
+
+// Search an existing business (find_business) or fall back to a free-text
+// name/phone — the picked/typed result is reported to the parent via
+// onChange as it changes, the parent decides where it gets persisted
+// (business_supplier_links for the business default, products for a
+// per-product override). `allowDefault` adds a third "Use default" tab,
+// only meaningful for the per-product override case.
+function SupplierPicker({ initialBusinessId, initialName, initialPhone, allowDefault, onChange }) {
+  const [mode, setMode] = useState(
+    allowDefault && !initialBusinessId && !initialName ? "default" : initialBusinessId ? "search" : initialName ? "text" : "search"
+  );
+  const [q, setQ] = useState("");
+  const [results, setResults] = useState([]);
+  const [picked, setPicked] = useState(initialBusinessId ? { id: initialBusinessId, name: initialName } : null);
+  const [name, setName] = useState(initialBusinessId ? "" : (initialName || ""));
+  const [phone, setPhone] = useState(initialBusinessId ? "" : (initialPhone || ""));
+
+  const search = async () => {
+    if (!q.trim()) { setResults([]); return; }
+    try { setResults(await sb.rpc("find_business", { p_name: q.trim() })); } catch { setResults([]); }
+  };
+
+  useEffect(() => {
+    if (mode === "default") onChange({ supplier_business_id: null, supplier_name: null, supplier_phone: null, isDefault: true });
+    else if (mode === "search") onChange({ supplier_business_id: picked ? picked.id : null, supplier_name: picked ? picked.name : null, supplier_phone: null, isDefault: false });
+    else {
+      const trimmed = name.trim();
+      onChange({ supplier_business_id: null, supplier_name: trimmed || null, supplier_phone: trimmed ? (phone.trim() || null) : null, isDefault: false });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, picked, name, phone]);
+
+  return (
+    <>
+      <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+        {allowDefault && <button style={{ ...S.btn, flex: 1, ...(mode === "default" ? S.btnDark : S.btnGhost) }} onClick={() => setMode("default")}>Use default</button>}
+        <button style={{ ...S.btn, flex: 1, ...(mode === "search" ? S.btnDark : S.btnGhost) }} onClick={() => setMode("search")}>On Pamusika</button>
+        <button style={{ ...S.btn, flex: 1, ...(mode === "text" ? S.btnDark : S.btnGhost) }} onClick={() => setMode("text")}>Not on the app</button>
+      </div>
+
+      {mode === "search" && (
+        <>
+          <div style={{ display: "flex", gap: 8 }}>
+            <input style={{ ...S.input, flex: 1 }} value={q} placeholder="Search business name"
+              onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") search(); }} />
+            <button style={{ ...S.btn, ...S.btnGhost }} onClick={search}><Search size={16} /></button>
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 10 }}>
+            {results.map((b) => (
+              <button key={b.id} style={{ ...S.card, width: "100%", textAlign: "left", cursor: "pointer", ...(picked && picked.id === b.id ? S.cardInCart : {}) }}
+                onClick={() => setPicked(b)}>
+                <div style={{ flex: 1 }}><div style={S.cardName}>{b.name}</div></div>
+                {picked && picked.id === b.id && <Check size={16} style={{ color: accent }} />}
+              </button>
+            ))}
+          </div>
+          {picked && <p style={{ ...S.hint }}>Selected: <b style={{ color: ink }}>{picked.name}</b></p>}
+        </>
+      )}
+      {mode === "text" && (
+        <>
+          <Field label="Agent's name" value={name} onChange={setName} placeholder="e.g. Samah Wholesalers" />
+          <Field label="Phone (optional)" value={phone} onChange={setPhone} type="tel" placeholder="077…" />
+        </>
+      )}
+      {mode === "default" && (
+        <p style={{ ...S.hint, marginTop: 0 }}>This product will order from your business's default agent (see “Set your agent” on the Order list).</p>
+      )}
+    </>
+  );
+}
+
+function SupplierLinkModal({ businessId, link, onClose, onSaved }) {
+  const [current, setCurrent] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  const valid = current && (current.supplier_business_id || current.supplier_name);
+
+  const save = async () => {
+    if (!valid) return;
+    setBusy(true);
+    try {
+      await saveSupplierLink(businessId, {
+        supplier_business_id: current.supplier_business_id,
+        supplier_name: current.supplier_name,
+        supplier_phone: current.supplier_phone,
+      });
+      await onSaved();
+    } catch (e) { alert(e.message); }
+    setBusy(false);
+  };
+
+  return (
+    <Modal onClose={onClose} title="Your supplying agent">
+      <p style={{ ...S.hint, marginTop: 0 }}>Link the business that supplies your stock. If they use Pamusika too, search for them below to send orders straight into their Orders tab. Otherwise just save their name and number.</p>
+      <SupplierPicker initialBusinessId={link && link.supplier_business_id} initialName={link && link.supplier_name} initialPhone={link && link.supplier_phone} onChange={setCurrent} />
+      <button style={{ ...S.btn, ...S.btnDark, width: "100%", marginTop: 10 }}
+        disabled={busy || !valid} onClick={save}>
+        <Check size={17} /> {busy ? "Saving…" : "Save agent"}
+      </button>
+    </Modal>
+  );
+}
+
+// Mirrors create_order_request's server-side composition exactly (see
+// church-approval-and-order-chat.sql) — used to preview a message before
+// sending, and as the only source of the message text for a free-text
+// (not-yet-registered) supplier, since that path never inserts an
+// order_requests row for the server to compose it for.
+function composeOrderMessage(requesterName, items, note) {
+  let msg = `Order request from ${requesterName || "a reseller"}:\n`;
+  items.forEach((it) => { msg += `- ${it.qty} ${it.unit || "unit(s)"} of ${it.product_name}\n`; });
+  if (note && note.trim()) msg += `\nNote: ${note.trim()}`;
+  return msg.trim();
+}
+
+// Legacy fallback for an order_requests row saved before the `message`
+// column existed — reconstructs a readable line list from its raw items.
+function legacyOrderText(o) {
+  return (o.items || []).map((it) => `- ${it.qty} ${it.unit || "unit(s)"} of ${it.product_name}`).join("\n");
+}
+
+// Every free-text message between two businesses, oldest first — independent
+// of whether any order exists yet between them, and independent of which one
+// got stored as "requester" vs "supplier" (a plain business-to-business DM,
+// started from Community rather than an agent relationship, has no fixed
+// direction — whoever opens the conversation first names themselves
+// "requester" in the insert, so both directions have to be checked here).
+// Same "table may not exist yet on older deployments" fallback as
+// fetchSupplierLink, since this ships as an additive migration.
+async function fetchThreadMessages(businessIdA, businessIdB) {
+  if (!businessIdA || !businessIdB) return [];
+  try {
+    return await sb.select("order_request_messages",
+      `or=(and(requester_business_id.eq.${businessIdA},supplier_business_id.eq.${businessIdB}),and(requester_business_id.eq.${businessIdB},supplier_business_id.eq.${businessIdA}))&order=created_at.asc`);
+  } catch { return []; }
+}
+// orderRequestId is optional context (tags the message to a specific order)
+// — a message can be sent any time, order or no order.
+function sendOrderRequestMessage(requesterBusinessId, supplierBusinessId, senderBusinessId, body, orderRequestId) {
+  return sb.rpc("send_order_request_message", {
+    p_requester_business_id: requesterBusinessId, p_supplier_business_id: supplierBusinessId,
+    p_sender_business_id: senderBusinessId, p_body: body, p_order_request_id: orderRequestId || null,
+  });
+}
+
+// Merges an order_requests thread with its order_request_messages into one
+// chronological timeline, each entry tagged `mine` from the viewing
+// business's own point of view — the same thread reads correctly whether
+// it's rendered for the requester (their orders are "mine") or the supplier
+// (the requester's orders are "theirs", their own replies are "mine").
+function buildThreadTimeline(thread, messages, viewerBusinessId) {
+  const events = [];
+  thread.forEach((o) => {
+    events.push({ type: "order", at: o.created_at, o, mine: o.requester_business_id === viewerBusinessId });
+    if (o.status !== "pending") events.push({ type: "resolution", at: o.fulfilled_at || o.created_at, o });
+  });
+  messages.forEach((m) => {
+    events.push({ type: "message", at: m.created_at, m, mine: m.sender_business_id === viewerBusinessId });
+  });
+  return events.sort((a, b) => new Date(a.at) - new Date(b.at));
+}
+
+// One bubble per order_requests row (plus a "system reply" once it's
+// resolved) interleaved chronologically with free-text order_request_messages
+// bubbles — a running history per requester↔supplier pair. "Mine" floats
+// right in the existing outgoing style, the other party's in the existing
+// system-bubble style, so real replies look like natural additions to the
+// chat that already existed here rather than a new visual language.
+// `onFulfill`/`onReject` (supplier-only) render inline under a pending order
+// that isn't "mine" — i.e. one this viewer received, not sent.
+function ChatThread({ thread, messages = [], viewerBusinessId, onFulfill, onReject, busy }) {
+  const events = buildThreadTimeline(thread, messages, viewerBusinessId);
+  if (events.length === 0) return <p style={S.empty}>No messages yet — say hello, or send an order below.</p>;
+  return (
+    <div style={S.chatThread}>
+      {events.map((ev) => {
+        if (ev.type === "order") {
+          return (
+            <React.Fragment key={`o-${ev.o.id}`}>
+              <div style={ev.mine ? S.chatBubbleOut : S.chatBubbleSystem}>
+                {ev.o.message || legacyOrderText(ev.o)}
+                <div style={S.chatMeta}>{new Date(ev.o.created_at).toLocaleString()}</div>
+              </div>
+              {!ev.mine && ev.o.status === "pending" && onFulfill && (
+                <div style={{ display: "flex", gap: 8, alignSelf: "flex-start", maxWidth: "88%", width: "88%" }}>
+                  <button style={{ ...S.btn, ...S.btnDark, flex: 1, padding: "8px 12px", fontSize: 13 }}
+                    disabled={busy} onClick={() => onFulfill(ev.o.id)}><Check size={14} /> Fulfill</button>
+                  <button style={{ ...S.btn, ...S.btnGhost, flex: 1, padding: "8px 12px", fontSize: 13, color: "#FF8B7A" }}
+                    disabled={busy} onClick={() => onReject(ev.o.id)}>Reject</button>
+                </div>
+              )}
+            </React.Fragment>
+          );
+        }
+        if (ev.type === "resolution") {
+          return (
+            <div key={`r-${ev.o.id}`} style={{ ...S.chatBubbleSystem, ...(ev.o.status === "rejected" ? S.chatBubbleSystemBad : {}) }}>
+              {ev.o.status === "fulfilled" ? "✓ Fulfilled" : `✗ Rejected${ev.o.rejection_reason ? " — " + ev.o.rejection_reason : ""}`}
+              {ev.o.fulfilled_at && <div style={S.chatMeta}>{new Date(ev.o.fulfilled_at).toLocaleString()}</div>}
+            </div>
+          );
+        }
+        return (
+          <div key={`m-${ev.m.id}`} style={ev.mine ? S.chatBubbleOut : S.chatBubbleSystem}>
+            {ev.m.body}
+            <div style={S.chatMeta}>{new Date(ev.m.created_at).toLocaleString()}</div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// Plain text + send button, reusing the app's ordinary input/button chrome
+// rather than inventing new form styling.
+function MessageComposer({ onSend, disabled, disabledHint }) {
+  const [body, setBody] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const send = async () => {
+    const trimmed = body.trim();
+    if (!trimmed || busy) return;
+    setBusy(true);
+    try { await onSend(trimmed); setBody(""); }
+    catch (e) { alert(e.message); }
+    setBusy(false);
+  };
+
+  if (disabled) return disabledHint ? <p style={{ ...S.hint, marginTop: 0 }}>{disabledHint}</p> : null;
+  return (
+    <div style={{ display: "flex", gap: 8 }}>
+      <input style={{ ...S.input, flex: 1 }} value={body} placeholder="Type a message…" autoComplete="off"
+        onChange={(e) => setBody(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") send(); }} />
+      <button style={{ ...S.btn, ...S.btnGhost, padding: "11px 14px" }} disabled={busy || !body.trim()} onClick={send}>
+        <Send size={16} />
+      </button>
+    </div>
+  );
+}
+
+// Shared chat layout: a bounded-height box with the message list scrolling
+// on its own and the composer always visible as a plain flex sibling at the
+// bottom — not scrolled past, not `position: fixed` (which fights mobile
+// keyboards in some browsers). `height` should be a dvh-based value on
+// mobile so the box — and the composer glued to its bottom — shrinks with
+// the on-screen keyboard instead of hiding behind it. Used by every chat
+// surface (agent threads, direct messages) so they all behave the same way.
+function ChatPanel({ height, thread = [], messages, viewerBusinessId, onFulfill, onReject, busy, onSend, extra }) {
+  return (
+    <div style={{ ...S.chatPanel, height }}>
+      <div style={S.chatPanelScroll}>
+        <ChatThread thread={thread} messages={messages} viewerBusinessId={viewerBusinessId}
+          onFulfill={onFulfill} onReject={onReject} busy={busy} />
+      </div>
+      {extra}
+      <div style={S.chatComposerBar}>
+        <MessageComposer onSend={onSend} />
+      </div>
+    </div>
+  );
+}
+
+// A per-supplier conversation thread: every order_requests row between this
+// business and a registered supplier renders as one outgoing bubble, with
+// its eventual fulfilled/rejected outcome as a second bubble, plus any
+// free-text order_request_messages interleaved in — and a composer to start
+// a new structured order alongside the plain-text reply box. A free-text
+// (not-yet-registered) supplier has no server-side history (order_requests
+// requires a real supplier_business_id), so that case skips straight to the
+// composer and hands off to WhatsApp.
+function SupplierThreadModal({ businessId, businessName, link, supplierName, items, onClose }) {
+  const supplierBusinessId = link && link.supplier_business_id;
+  const supplierPhone = link && link.supplier_phone;
+  const [thread, setThread] = useState([]);
+  const [messages, setMessages] = useState([]);
+  const [loading, setLoading] = useState(!!supplierBusinessId);
+  const [composing, setComposing] = useState(!supplierBusinessId);
+
+  const loadThread = useCallback(async () => {
+    if (!supplierBusinessId) return;
+    try {
+      const [rows, msgs] = await Promise.all([
+        sb.select("order_requests", `requester_business_id=eq.${businessId}&supplier_business_id=eq.${supplierBusinessId}&order=created_at.asc`),
+        fetchThreadMessages(businessId, supplierBusinessId),
+      ]);
+      setThread(rows);
+      setMessages(msgs);
+    } catch { setThread([]); setMessages([]); }
+    setLoading(false);
+  }, [businessId, supplierBusinessId]);
+  useEffect(() => { loadThread(); }, [loadThread]);
+
+  const sendInApp = async (payload, note) => {
+    await sb.rpc("create_order_request", {
+      p_requester_business_id: businessId, p_supplier_business_id: supplierBusinessId,
+      p_items: payload, p_note: note || null,
+    });
+    setComposing(false);
+    await loadThread();
+  };
+
+  const latestOrderId = thread.length ? thread[thread.length - 1].id : null;
+  const sendMessage = async (body) => {
+    await sendOrderRequestMessage(businessId, supplierBusinessId, businessId, body, latestOrderId);
+    await loadThread();
+  };
+
+  return (
+    <Modal onClose={onClose} title={supplierName || "Agent"}>
+      {supplierBusinessId && (loading ? <Loading /> : (
+        <ChatPanel height="52dvh" thread={thread} messages={messages} viewerBusinessId={businessId} onSend={sendMessage} />
+      ))}
+      {!composing ? (
+        <button style={{ ...S.btn, ...S.btnGold, width: "100%", marginTop: 12 }} onClick={() => setComposing(true)}>
+          <Plus size={16} /> New order
+        </button>
+      ) : (
+        <div style={{ marginTop: 12 }}>
+          <OrderComposer
+            businessName={businessName} supplierBusinessId={supplierBusinessId} supplierPhone={supplierPhone}
+            supplierName={supplierName} items={items}
+            onSend={sendInApp}
+            onCancel={() => setComposing(supplierBusinessId ? false : true)}
+            onSentWhatsapp={() => { if (!supplierBusinessId) onClose(); }}
+          />
+        </div>
+      )}
+    </Modal>
+  );
+}
+
+// Compose a new message: pick products/quantities (from the reorder
+// suggestions computed above) and an optional note — never free-typed.
+// `onSend` performs the actual create_order_request call (the parent knows
+// businessId/supplierBusinessId); `onSentWhatsapp` fires after the WhatsApp
+// hand-off for a free-text supplier, since nothing is persisted there.
+function OrderComposer({ businessName, supplierBusinessId, supplierPhone, supplierName, items, onSend, onCancel, onSentWhatsapp }) {
+  const [lines, setLines] = useState(items.map((it) => ({ product_name: it.p.name, qty: it.propose, unit: it.box > 1 ? `box of ${it.box}` : "unit" })));
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  const setQty = (i, v) => setLines((prev) => prev.map((l, j) => j === i ? { ...l, qty: Math.max(0, parseInt(v) || 0) } : l));
+  const removeLine = (i) => setLines((prev) => prev.filter((_, j) => j !== i));
+  const payload = lines.filter((l) => l.qty > 0);
+  const preview = payload.length ? composeOrderMessage(businessName, payload, note) : "";
+
+  const sendInApp = async () => {
+    if (payload.length === 0) return;
+    setBusy(true); setErr("");
+    try { await onSend(payload, note.trim() || null); }
+    catch (e) { setErr(e.message); }
+    setBusy(false);
+  };
+
+  const openWhatsapp = () => {
+    if (payload.length === 0) return;
+    const digits = (supplierPhone || "").replace(/\D/g, "");
+    if (!digits) { setErr("No phone number saved for this agent — add one in \"Set your agent\"."); return; }
+    window.open(`https://wa.me/${digits}?text=${encodeURIComponent(preview)}`, "_blank");
+    onSentWhatsapp();
+  };
+
+  return (
+    <div style={{ borderTop: `1px solid ${line}`, paddingTop: 14, marginTop: 4 }}>
+      <SectionTitle>New order</SectionTitle>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {lines.map((l, i) => (
+          <div key={i} style={S.cartLine}>
+            <div style={{ flex: 1 }}>
+              <div style={S.cardName}>{l.product_name}</div>
+              <div style={S.cardMeta}>{l.unit}</div>
+            </div>
+            <input style={{ ...S.input, width: 64, textAlign: "center" }} type="number" value={l.qty}
+              onChange={(e) => setQty(i, e.target.value)} />
+            <button style={S.delBtn} onClick={() => removeLine(i)}><X size={16} /></button>
+          </div>
+        ))}
+        {lines.length === 0 && <p style={S.empty}>Nothing left to order.</p>}
+      </div>
+      <Field label="Note (optional)" value={note} onChange={setNote} placeholder="e.g. deliver Friday please" />
+      {preview && (
+        <div style={{ ...S.sellSummary, flexDirection: "column", alignItems: "stretch", gap: 4 }}>
+          <span style={{ ...S.fieldLabel, marginBottom: 0 }}>Message preview</span>
+          <span style={{ whiteSpace: "pre-wrap", fontWeight: 600 }}>{preview}</span>
+        </div>
+      )}
+      {err && <p style={S.errTxt}>{err}</p>}
+      <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+        {supplierBusinessId ? (
+          <button style={{ ...S.btn, ...S.btnDark, flex: 1 }} disabled={busy || payload.length === 0} onClick={sendInApp}>
+            <Send size={17} /> {busy ? "Sending…" : "Send order"}
+          </button>
+        ) : (
+          <button style={{ ...S.btn, ...S.btnDark, flex: 1 }} disabled={payload.length === 0} onClick={openWhatsapp}>
+            <Send size={17} /> Open WhatsApp with this order
+          </button>
+        )}
+        <button style={{ ...S.btn, ...S.btnGhost, flex: 1 }} onClick={onCancel}>Cancel</button>
+      </div>
+      {!supplierBusinessId && (
+        <p style={{ ...S.hint, marginTop: 8 }}>
+          This agent isn't on Pamusika yet, so there's no in-app history — opening WhatsApp with the message
+          already filled in is the record; you still send it yourself.
+        </p>
+      )}
+    </div>
+  );
+}
+
+// A plain 1:1 conversation between two businesses — no order attached, just
+// messages. Reuses the same storage as the agent conversations
+// (order_request_messages) since that table is already just "messages
+// between a business pair" underneath; this simply never has any
+// order_requests rows in the mix, so ChatThread gets an empty `thread`.
+function DirectMessageModal({ businessId, otherId, otherName, onClose }) {
+  const [messages, setMessages] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  const load = useCallback(async () => {
+    setMessages(await fetchThreadMessages(businessId, otherId));
+    setLoading(false);
+  }, [businessId, otherId]);
+  useEffect(() => { load(); }, [load]);
+
+  const sendMessage = async (body) => {
+    await sendOrderRequestMessage(businessId, otherId, businessId, body);
+    await load();
+  };
+
+  return (
+    <Modal onClose={onClose} title={otherName || "Business"}>
+      {loading ? <Loading /> : (
+        <ChatPanel height="68dvh" messages={messages} viewerBusinessId={businessId} onSend={sendMessage} />
+      )}
+    </Modal>
+  );
+}
+
+// Search any business by name (find_business, same lookup Login/SupplierPicker
+// use) and start a direct conversation with them — the way to message someone
+// you haven't talked to before and didn't just see post in the room.
+function StartDirectMessage({ businessId, onOpen }) {
+  const [q, setQ] = useState("");
+  const [results, setResults] = useState([]);
+  const [busy, setBusy] = useState(false);
+
+  const search = async () => {
+    if (!q.trim()) return;
+    setBusy(true);
+    try { setResults(await sb.rpc("find_business", { p_name: q.trim() })); } catch { setResults([]); }
+    setBusy(false);
+  };
+
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <div style={{ display: "flex", gap: 8 }}>
+        <input style={{ ...S.input, flex: 1 }} value={q} placeholder="Find a business by name…"
+          onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") search(); }} />
+        <button style={{ ...S.btn, ...S.btnGhost }} disabled={busy || !q.trim()} onClick={search}><Search size={16} /></button>
+      </div>
+      {results.filter((b) => b.id !== businessId).map((b) => (
+        <button key={b.id} style={{ ...S.card, width: "100%", textAlign: "left", cursor: "pointer", marginTop: 8 }}
+          onClick={() => { onOpen({ id: b.id, name: b.name }); setResults([]); setQ(""); }}>
+          <div style={{ flex: 1 }}><div style={S.cardName}>{b.name}</div></div>
+          <Send size={15} style={{ color: muted }} />
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// One open room every business on the app shares, plus direct messages to
+// any one business — separate from the private business↔agent threads
+// above (those live under the Order/Orders tabs). Polls while mounted since
+// there's no realtime subscription in this app, same idea as useData's 60s
+// refresh.
+function CommunityChat({ businessId, businessName }) {
+  const [view, setView] = useState("room"); // "room" | "dms"
+  const [messages, setMessages] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [body, setBody] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [dmPartners, setDmPartners] = useState([]); // [{id, name}]
+  const [dmTarget, setDmTarget] = useState(null);   // {id, name} or null
+
+  const load = useCallback(async () => {
+    try {
+      const rows = await sb.select("community_chat_messages", "order=created_at.desc&limit=200");
+      setMessages(rows.slice().reverse());
+    } catch { setMessages([]); }
+    setLoading(false);
+  }, []);
+  useEffect(() => {
+    load();
+    const t = setInterval(load, 6000);
+    return () => clearInterval(t);
+  }, [load]);
+
+  const loadDmPartners = useCallback(async () => {
+    try {
+      const [asRequester, asSupplier] = await Promise.all([
+        sb.select("order_request_messages", `requester_business_id=eq.${businessId}&select=supplier_business_id`),
+        sb.select("order_request_messages", `supplier_business_id=eq.${businessId}&select=requester_business_id`),
+      ]);
+      const ids = [...new Set([
+        ...asRequester.map((r) => r.supplier_business_id),
+        ...asSupplier.map((r) => r.requester_business_id),
+      ])];
+      if (ids.length === 0) { setDmPartners([]); return; }
+      const bizzes = await sb.select("businesses", `id=in.(${ids.join(",")})&select=id,name`);
+      setDmPartners(bizzes.map((b) => ({ id: b.id, name: b.name })));
+    } catch { setDmPartners([]); }
+  }, [businessId]);
+  useEffect(() => { if (view === "dms") loadDmPartners(); }, [view, loadDmPartners]);
+
+  const send = async () => {
+    const trimmed = body.trim();
+    if (!trimmed || busy) return;
+    setBusy(true);
+    try {
+      await sb.rpc("send_community_message", { p_business_id: businessId, p_sender_name: businessName, p_body: trimmed });
+      setBody("");
+      await load();
+    } catch (e) { alert(e.message); }
+    setBusy(false);
+  };
+
+  return (
+    <>
+      <SectionTitle>Community</SectionTitle>
+      <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+        <button style={{ ...S.btn, flex: 1, ...(view === "room" ? S.btnDark : S.btnGhost) }} onClick={() => setView("room")}>Room</button>
+        <button style={{ ...S.btn, flex: 1, ...(view === "dms" ? S.btnDark : S.btnGhost) }} onClick={() => setView("dms")}>Direct messages</button>
+      </div>
+
+      {view === "dms" ? (
+        <>
+          <p style={S.hint}>Message one business directly, instead of the whole room.</p>
+          <StartDirectMessage businessId={businessId} onOpen={setDmTarget} />
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {dmPartners.map((p) => (
+              <button key={p.id} style={{ ...S.card, width: "100%", textAlign: "left", cursor: "pointer" }}
+                onClick={() => setDmTarget(p)}>
+                <div style={{ flex: 1 }}><div style={S.cardName}>{p.name}</div></div>
+                <Send size={15} style={{ color: muted }} />
+              </button>
+            ))}
+            {dmPartners.length === 0 && <p style={S.empty}>No direct messages yet — search above to start one.</p>}
+          </div>
+        </>
+      ) : (
+        // Bounded-height box, not the normal page flow: the message list is
+        // the only part that scrolls, and the composer sits as a plain flex
+        // sibling at the bottom of the box — always visible, never something
+        // you have to scroll down past the whole history to reach. `dvh`
+        // (dynamic viewport height) means on a phone this box automatically
+        // shrinks when the on-screen keyboard opens, so the composer stays
+        // sat right above the keyboard instead of hiding behind it.
+        <div style={{ ...S.chatPanel, height: "calc(100dvh - 280px)", minHeight: 220 }}>
+          <p style={{ ...S.hint, marginTop: 0 }}>One open chat for every business on Pamusika — say hello, ask a question, share a tip. Tap a name to message them directly instead.</p>
+          {loading ? <Loading /> : (
+            <div style={S.chatPanelScroll}>
+              {messages.length === 0 && <p style={S.empty}>No messages yet — be the first to say something.</p>}
+              <div style={S.chatThread}>
+                {messages.map((m) => {
+                  const mine = m.business_id === businessId;
+                  return (
+                    <div key={m.id} style={mine ? S.chatBubbleOut : S.chatBubbleSystem}>
+                      {!mine && (
+                        <button
+                          style={{ background: "none", border: "none", padding: 0, cursor: "pointer", fontSize: 11.5, fontWeight: 800, opacity: 0.75, marginBottom: 2, color: "inherit", display: "block" }}
+                          onClick={() => setDmTarget({ id: m.business_id, name: m.sender_name })}>
+                          {m.sender_name}
+                        </button>
+                      )}
+                      {m.body}
+                      <div style={S.chatMeta}>{new Date(m.created_at).toLocaleString()}</div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+          <div style={S.chatComposerBar}>
+            <div style={{ display: "flex", gap: 8 }}>
+              <input style={{ ...S.input, flex: 1 }} value={body} placeholder="Type a message…" autoComplete="off"
+                onChange={(e) => setBody(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") send(); }} />
+              <button style={{ ...S.btn, ...S.btnGhost, padding: "11px 14px" }} disabled={busy || !body.trim()} onClick={send}>
+                <Send size={16} />
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {dmTarget && (
+        <DirectMessageModal businessId={businessId} otherId={dmTarget.id} otherName={dmTarget.name}
+          onClose={() => { setDmTarget(null); if (view === "dms") loadDmPartners(); }} />
+      )}
+    </>
+  );
+}
+
+// Agent's inbox of incoming order requests from businesses that link to it as supplier
+function OrdersInbox({ businessId }) {
+  const [orders, setOrders] = useState([]);
+  const [clients, setClients] = useState([]); // every business that has linked us as their agent
+  const [names, setNames] = useState({});
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [threadRequesterId, setThreadRequesterId] = useState(null);   // opens the full conversation with one requester
+
+  const load = useCallback(async () => {
+    try {
+      const [rows, links] = await Promise.all([
+        sb.select("order_requests", `supplier_business_id=eq.${businessId}&order=created_at.desc`),
+        sb.select("business_supplier_links", `supplier_business_id=eq.${businessId}&select=business_id`).catch(() => []),
+      ]);
+      setOrders(rows);
+      setClients(links.map((l) => l.business_id));
+      const ids = [...new Set([...rows.map((r) => r.requester_business_id), ...links.map((l) => l.business_id)])];
+      if (ids.length) {
+        const bizzes = await sb.select("businesses", `id=in.(${ids.join(",")})&select=id,name`);
+        const map = {}; bizzes.forEach((b) => { map[b.id] = b.name; });
+        setNames(map);
+      }
+    } catch {}
+    setLoading(false);
+  }, [businessId]);
+  useEffect(() => { load(); }, [load]);
+
+  const fulfill = async (id) => {
+    setBusy(true);
+    try { await sb.rpc("fulfill_order_request", { p_id: id }); await load(); }
+    catch (e) { alert(e.message); }
+    setBusy(false);
+  };
+  const reject = async (id) => {
+    const reason = window.prompt("Reason for rejecting (optional):") || null;
+    setBusy(true);
+    try { await sb.rpc("reject_order_request", { p_id: id, p_reason: reason }); await load(); }
+    catch (e) { alert(e.message); }
+    setBusy(false);
+  };
+
+  if (loading) return <Loading />;
+  const pending = orders.filter((o) => o.status === "pending");
+  const done = orders.filter((o) => o.status !== "pending");
+  const requesterLabel = (id) => names[id] || `Business ${id}`;
+  // Clients who've linked us as their agent but never sent an order yet —
+  // without this they'd have no way to be messaged first.
+  const orderedIds = new Set(orders.map((o) => o.requester_business_id));
+  const chatOnlyClients = clients.filter((id) => !orderedIds.has(id));
+
+  return (
+    <>
+      {chatOnlyClients.length > 0 && (
+        <>
+          <SectionTitle>Chats</SectionTitle>
+          <p style={S.hint}>Businesses using you as their agent — message them any time, even before they've ordered.</p>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 18 }}>
+            {chatOnlyClients.map((id) => (
+              <button key={id} style={{ ...S.card, width: "100%", textAlign: "left", cursor: "pointer" }}
+                onClick={() => setThreadRequesterId(id)}>
+                <div style={{ flex: 1 }}><div style={S.cardName}>{requesterLabel(id)}</div></div>
+                <Send size={15} style={{ color: muted }} />
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+      <SectionTitle>Incoming orders</SectionTitle>
+      <p style={S.hint}>Requests sent to you by businesses that use you as their supplier.</p>
+      {pending.length === 0 && <p style={S.empty}>No pending orders.</p>}
+      <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 18 }}>
+        {pending.map((o) => (
+          <div key={o.id} style={{ ...S.card, flexDirection: "column", alignItems: "stretch", gap: 8 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <div style={{ flex: 1 }}>
+                <div style={S.cardName}>{requesterLabel(o.requester_business_id)}
+                  <span style={{ ...S.invTag, background: "#FFF1DA", color: "#B26A00" }}>pending</span>
+                </div>
+                <div style={S.cardMeta}>{new Date(o.created_at).toLocaleString()}</div>
+              </div>
+            </div>
+            <div style={{ whiteSpace: "pre-wrap", fontSize: 13.5, lineHeight: 1.5, background: "rgba(255,255,255,0.05)", border: `1px solid ${line}`, borderRadius: 10, padding: "10px 12px" }}>
+              {o.message || legacyOrderText(o)}
+            </div>
+            {!o.message && o.note && <div style={S.cardMeta}>Note: {o.note}</div>}
+            <div style={{ display: "flex", gap: 8 }}>
+              <button style={{ ...S.btn, ...S.btnDark, flex: 1 }} disabled={busy} onClick={() => fulfill(o.id)}><Check size={16} /> Fulfill</button>
+              <button style={{ ...S.btn, ...S.btnGhost, flex: 1, color: "#FF8B7A" }} disabled={busy} onClick={() => reject(o.id)}>Reject</button>
+            </div>
+            <button style={{ ...S.btn, ...S.btnGhost, padding: "8px 12px", fontSize: 12.5 }}
+              onClick={() => setThreadRequesterId(o.requester_business_id)}>
+              <Send size={13} /> Messages
+            </button>
+          </div>
+        ))}
+      </div>
+      {done.length > 0 && <>
+        <SectionTitle>History</SectionTitle>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {done.map((o) => (
+            <div key={o.id} style={{ ...S.card, flexDirection: "column", alignItems: "stretch", gap: 8 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <div style={{ flex: 1 }}>
+                  <div style={S.cardName}>{requesterLabel(o.requester_business_id)}
+                    <span style={{ ...S.invTag, ...(o.status === "fulfilled" ? {} : { background: "#FFE2E2", color: "#C0392B" }) }}>{o.status}</span>
+                  </div>
+                  <div style={S.cardMeta}>{new Date(o.created_at).toLocaleString()}</div>
+                </div>
+              </div>
+              <button style={{ ...S.btn, ...S.btnGhost, padding: "8px 12px", fontSize: 12.5 }}
+                onClick={() => setThreadRequesterId(o.requester_business_id)}>
+                <Send size={13} /> Messages
+              </button>
+            </div>
+          ))}
+        </div>
+      </>}
+      {threadRequesterId && (
+        <SupplierOrderThreadModal businessId={businessId} requesterId={threadRequesterId}
+          requesterName={requesterLabel(threadRequesterId)}
+          onClose={() => setThreadRequesterId(null)} onActioned={load} />
+      )}
+    </>
+  );
+}
+
+// The supplier's side of the same conversation SupplierThreadModal shows the
+// requester — reuses the same merged order+message ChatThread timeline, just
+// viewed with this business as `viewerBusinessId` so the requester's orders
+// render as "theirs" and pick up inline Fulfill/Reject, while this business's
+// own replies render as "mine". Scoped to one requester at a time, same as
+// SupplierThreadModal is scoped to one supplier at a time.
+function SupplierOrderThreadModal({ businessId, requesterId, requesterName, onClose, onActioned }) {
+  const [thread, setThread] = useState([]);
+  const [messages, setMessages] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      const [rows, msgs] = await Promise.all([
+        sb.select("order_requests", `requester_business_id=eq.${requesterId}&supplier_business_id=eq.${businessId}&order=created_at.asc`),
+        fetchThreadMessages(requesterId, businessId),
+      ]);
+      setThread(rows);
+      setMessages(msgs);
+    } catch { setThread([]); setMessages([]); }
+    setLoading(false);
+  }, [businessId, requesterId]);
+  useEffect(() => { load(); }, [load]);
+
+  const fulfill = async (id) => {
+    setBusy(true);
+    try { await sb.rpc("fulfill_order_request", { p_id: id }); await load(); await onActioned(); }
+    catch (e) { alert(e.message); }
+    setBusy(false);
+  };
+  const reject = async (id) => {
+    const reason = window.prompt("Reason for rejecting (optional):") || null;
+    setBusy(true);
+    try { await sb.rpc("reject_order_request", { p_id: id, p_reason: reason }); await load(); await onActioned(); }
+    catch (e) { alert(e.message); }
+    setBusy(false);
+  };
+
+  const latestOrderId = thread.length ? thread[thread.length - 1].id : null;
+  const sendMessage = async (body) => {
+    await sendOrderRequestMessage(requesterId, businessId, businessId, body, latestOrderId);
+    await load();
+  };
+
+  return (
+    <Modal onClose={onClose} title={requesterName || "Business"}>
+      {loading ? <Loading /> : (
+        <ChatPanel height="68dvh" thread={thread} messages={messages} viewerBusinessId={businessId}
+          onFulfill={fulfill} onReject={reject} busy={busy} onSend={sendMessage} />
+      )}
+    </Modal>
   );
 }
 
@@ -2953,7 +4143,7 @@ function Report({ sales, products, low, cats = [] }) {
         </select>
       </label>
 
-      <div style={S.statGrid}>
+      <div className="pk-statgrid" style={S.statGrid}>
         <Stat icon={<TrendingUp size={16} />} label="Week sales" value={money(totalSales)} accent delay={0} />
         <Stat icon={<Wallet size={16} />} label="Cash (sales − God)" value={money(cash)} tint={mango} delay={0.05} />
         <Stat icon={<Church size={16} />} label="To God" value={money(totalTithe)} tint={grape} delay={0.1} />
@@ -3174,7 +4364,7 @@ function MemberDetail({ member, businessId, onClose, onChanged, onRemoved }) {
 // ============================================================
 // 10. SHARED UI
 // ============================================================
-function Header({ title, sub, onExit, onRefresh, exitLabel }) {
+export function Header({ title, sub, onExit, onRefresh, exitLabel }) {
   return (
     <div style={S.header}>
       <div>
@@ -3188,12 +4378,96 @@ function Header({ title, sub, onExit, onRefresh, exitLabel }) {
     </div>
   );
 }
-function Tabs({ tab, setTab, items }) {
+export function Tabs({ tab, setTab, items }) {
   return (
     <div style={S.tabs}>
       {items.map(([k, label]) => (
         <button key={k} style={{ ...S.tab, ...(tab === k ? S.tabActive : {}) }} onClick={() => setTab(k)}>{label}</button>
       ))}
+    </div>
+  );
+}
+
+// ============================================================
+// RESPONSIVE SHELL — mobile keeps today's exact single-column,
+// top-tab layout (nothing below changes it); a wide viewport (the
+// breakpoint is a judgment call — 900px, wide enough that a real
+// phone/Capacitor webview never crosses it) gets a left sidebar and
+// a much wider content column instead. One hook + one shell so
+// Admin/ChurchApp don't each reinvent this.
+// ============================================================
+export function useIsDesktop(breakpoint = 900) {
+  const [isDesktop, setIsDesktop] = useState(() =>
+    typeof window !== "undefined" && window.matchMedia
+      ? window.matchMedia(`(min-width: ${breakpoint}px)`).matches
+      : false
+  );
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return;
+    const mq = window.matchMedia(`(min-width: ${breakpoint}px)`);
+    const onChange = (e) => setIsDesktop(e.matches);
+    setIsDesktop(mq.matches);
+    if (mq.addEventListener) mq.addEventListener("change", onChange);
+    else mq.addListener(onChange);
+    return () => {
+      if (mq.removeEventListener) mq.removeEventListener("change", onChange);
+      else mq.removeListener(onChange);
+    };
+  }, [breakpoint]);
+  return isDesktop;
+}
+
+// Shared chrome for tabbed screens (Admin, ChurchApp): header + tabs + body
+// on mobile (byte-for-byte what those screens rendered before), a sidebar +
+// wide content pane on desktop. `decoration` is an optional absolutely-
+// positioned background layer (e.g. a watermark); `toolbar`/`alerts` render
+// between the header and the tab content on both layouts.
+export function AppShell({ title, subtitle, icon, tab, setTab, labels, keys, items, onExit, onRefresh, exitLabel, toolbar, alerts, decoration, children }) {
+  const isDesktop = useIsDesktop();
+  const tabItems = items || keys.map((k) => [k, labels[k]]);
+
+  if (!isDesktop) {
+    return (
+      <div style={S.shell}>
+        {decoration}
+        <Header title={title} sub={subtitle} onExit={onExit} onRefresh={onRefresh} exitLabel={exitLabel} />
+        {alerts}
+        {toolbar && <div style={{ padding: "0 20px 10px", position: "relative", zIndex: 1 }}>{toolbar}</div>}
+        <Tabs tab={tab} setTab={setTab} items={tabItems} />
+        <div style={S.body}>{children}</div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={S.deskShell}>
+      {decoration}
+      <aside style={S.deskSidebar}>
+        <div style={S.deskBrand}>
+          <span style={S.deskBrandIcon}>{icon}</span>
+          <div>
+            <div style={S.deskBrandTitle}>{title}</div>
+            <div style={S.deskBrandSub}>{subtitle}</div>
+          </div>
+        </div>
+        <nav style={S.deskNav}>
+          {tabItems.map(([k, label]) => (
+            <button key={k} style={{ ...S.deskNavItem, ...(tab === k ? S.deskNavItemActive : {}) }} onClick={() => setTab(k)}>
+              {label}
+            </button>
+          ))}
+        </nav>
+        <div style={{ flex: 1 }} />
+        <div style={S.deskSidebarFoot}>
+          {onRefresh && <button style={S.deskFootBtn} onClick={onRefresh}><RefreshCw size={14} /> Refresh</button>}
+          <button style={S.deskFootBtn} onClick={onExit}><LogOut size={14} /> {exitLabel || "Sign out"}</button>
+        </div>
+      </aside>
+      <main style={S.deskMain}>
+        {toolbar && <div style={{ marginBottom: 16 }}>{toolbar}</div>}
+        {alerts}
+        <div style={S.deskContent}>{children}</div>
+      </main>
     </div>
   );
 }
@@ -3234,7 +4508,7 @@ function SalesList({ sales, showSeller, onDelete, showTithe }) {
     </div>
   );
 }
-function SectionTitle({ children }) { return <div style={S.sectionTitle}>{children}</div>; }
+export function SectionTitle({ children }) { return <div style={S.sectionTitle}>{children}</div>; }
 function SearchBar({ value, onChange }) {
   return (
     <div style={S.searchWrap}>
@@ -3245,8 +4519,8 @@ function SearchBar({ value, onChange }) {
     </div>
   );
 }
-function Loading() { return <div style={{ textAlign: "center", padding: "40px 0" }}><div style={S.loadDot} /></div>; }
-function Field({ label, value, onChange, type = "text", placeholder }) {
+export function Loading() { return <div style={{ textAlign: "center", padding: "40px 0" }}><div style={S.loadDot} /></div>; }
+export function Field({ label, value, onChange, type = "text", placeholder }) {
   return (
     <label style={S.fieldWrap}>
       <span style={S.fieldLabel}>{label}</span>
@@ -3254,7 +4528,7 @@ function Field({ label, value, onChange, type = "text", placeholder }) {
     </label>
   );
 }
-function Modal({ children, onClose, title }) {
+export function Modal({ children, onClose, title }) {
   return (
     <div style={S.overlay} onClick={onClose}>
       <div style={S.modal} onClick={(e) => e.stopPropagation()}>
@@ -3285,7 +4559,7 @@ function LightWatermark() {
   );
 }
 
-function MarketWatermark() {
+export function MarketWatermark() {
   // Faint repeating grocery icons behind the dark login
   return (
     <svg viewBox="0 0 400 600" style={S.watermark} aria-hidden="true" preserveAspectRatio="xMidYMid slice">
@@ -3305,78 +4579,57 @@ function MarketWatermark() {
 }
 
 function DeliveryScene() {
-  // Code-drawn animated scene: delivery van, seller handing a grocery bag,
-  // customer handing money back. No external image needed.
+  // Code-drawn abstract mark, no external image needed — echoes PamusikaMark's
+  // layered-diamond motif at hero scale instead of a literal illustrated scene,
+  // matching a premium/editorial feel rather than a clip-art vibe.
+  const rings = [
+    { r: 74, op: 0.10 }, { r: 56, op: 0.16 }, { r: 40, op: 0.24 },
+  ];
   return (
     <div style={S.heroWrap}>
       <svg viewBox="0 0 360 200" style={{ width: "100%", display: "block" }} aria-hidden="true">
         <defs>
-          <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0" stopColor="#11342a" />
-            <stop offset="1" stopColor="#0c241d" />
+          <linearGradient id="heroSky" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stopColor="#153a2d" />
+            <stop offset="1" stopColor="#0a1e17" />
           </linearGradient>
-          <linearGradient id="van" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0" stopColor="#2bd07a" />
-            <stop offset="1" stopColor="#1f9d55" />
+          <radialGradient id="heroGlow" cx="50%" cy="42%" r="60%">
+            <stop offset="0" stopColor="#E6C44D" stopOpacity="0.35" />
+            <stop offset="1" stopColor="#E6C44D" stopOpacity="0" />
+          </radialGradient>
+          <linearGradient id="heroDiamond" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stopColor="#F3DA84" />
+            <stop offset="1" stopColor="#C9A227" />
           </linearGradient>
         </defs>
 
-        {/* ground */}
-        <rect x="0" y="0" width="360" height="200" fill="url(#sky)" />
-        <line x1="0" y1="165" x2="360" y2="165" stroke="#1c4d3d" strokeWidth="2" />
+        <rect x="0" y="0" width="360" height="200" fill="url(#heroSky)" />
+        <circle cx="180" cy="86" r="90" fill="url(#heroGlow)" />
 
-        {/* sun/coin glow */}
-        <circle cx="300" cy="45" r="26" fill="#F5C443" opacity="0.18" />
-        <circle cx="300" cy="45" r="15" fill="#F5C443" opacity="0.30" />
+        {rings.map((ring, i) => (
+          <circle key={i} cx="180" cy="86" r={ring.r} fill="none" stroke="#E6C44D" strokeWidth="1" opacity={ring.op} />
+        ))}
 
-        {/* delivery van */}
-        <g>
-          <rect x="18" y="92" width="78" height="46" rx="6" fill="url(#van)" />
-          <rect x="96" y="104" width="34" height="34" rx="6" fill="url(#van)" />
-          <rect x="100" y="108" width="22" height="16" rx="3" fill="#d8fbe6" opacity="0.85" />
-          <text x="40" y="122" fontSize="13" fontWeight="800" fill="#0c241d" fontFamily="Inter, sans-serif">FRESH</text>
-          <circle cx="44" cy="142" r="11" fill="#0c241d" stroke="#2bd07a" strokeWidth="3" />
-          <circle cx="110" cy="142" r="11" fill="#0c241d" stroke="#2bd07a" strokeWidth="3" />
+        <g style={{ transformOrigin: "180px 86px", animation: "bob 5s ease-in-out infinite" }}>
+          <path d="M180 40 L228 66 L180 92 L132 66 Z" fill="url(#heroDiamond)" opacity="0.94" />
+          <path d="M180 60 L216 80 L180 100 L144 80 Z" fill="url(#heroDiamond)" opacity="0.66" />
+          <path d="M180 80 L204 94 L180 108 L156 94 Z" fill="url(#heroDiamond)" opacity="0.38" />
         </g>
 
-        {/* seller */}
-        <g>
-          <circle cx="170" cy="96" r="9" fill="#F5C443" />
-          <rect x="162" y="106" width="16" height="30" rx="7" fill="#2bd07a" />
-          {/* seller arm holding the bag, gentle hand-off motion */}
-          <g style={{ transformOrigin: "172px 116px", animation: "handoff 3.2s ease-in-out infinite" }}>
-            <line x1="176" y1="114" x2="198" y2="120" stroke="#F5C443" strokeWidth="4" strokeLinecap="round" />
-            {/* grocery bag */}
-            <path d="M196 116 h16 l3 20 h-22 z" fill="#C98A3A" />
-            <path d="M200 116 q4 -6 8 0" fill="none" stroke="#C98A3A" strokeWidth="2" />
-            <circle cx="201" cy="126" r="2" fill="#2bd07a" />
-            <circle cx="207" cy="124" r="2" fill="#E0457B" />
-            <circle cx="211" cy="128" r="2" fill="#F5C443" />
-          </g>
-        </g>
+        <text x="180" y="150" textAnchor="middle" fontSize="13" fontWeight="600" letterSpacing="0.28em"
+          fill="#EAF3EC" opacity="0.55" fontFamily="Inter, sans-serif">SMART BUSINESS</text>
 
-        {/* customer */}
-        <g>
-          <circle cx="246" cy="98" r="9" fill="#F2C9A0" />
-          <rect x="238" y="108" width="16" height="28" rx="7" fill="#2FA7D8" />
-          {/* customer arm handing money */}
-          <g style={{ transformOrigin: "242px 118px", animation: "handoff 3.2s ease-in-out infinite reverse" }}>
-            <line x1="238" y1="116" x2="220" y2="122" stroke="#F2C9A0" strokeWidth="4" strokeLinecap="round" />
-            <rect x="208" y="117" width="16" height="10" rx="2" fill="#7CC243" stroke="#0c241d" strokeWidth="1" />
-            <text x="212" y="125" fontSize="7" fontWeight="800" fill="#0c241d" fontFamily="Inter, sans-serif">$</text>
-          </g>
-        </g>
-
-        {/* floating exchange sparkle */}
-        <g opacity="0.9">
-          <circle cx="215" cy="100" r="2" fill="#F5C443" style={{ animation: "rise 2.6s ease-in-out infinite" }} />
+        <g opacity="0.85">
+          <circle cx="86" cy="52" r="2" fill="#F5C443" style={{ animation: "rise 3.4s ease-in-out infinite" }} />
+          <circle cx="276" cy="118" r="2" fill="#F5C443" style={{ animation: "rise 2.8s ease-in-out infinite 0.6s" }} />
+          <circle cx="264" cy="46" r="1.6" fill="#F5C443" style={{ animation: "rise 3s ease-in-out infinite 1.1s" }} />
         </g>
       </svg>
     </div>
   );
 }
 
-function HeroImage() {
+export function HeroImage() {
   // Optional real photo / 3D render: drop hero.jpg into the project's public folder.
   // It renders here in a premium gold-edged frame with a soft glow.
   const [ok, setOk] = useState(true);
@@ -3385,7 +4638,7 @@ function HeroImage() {
     <div style={{ position: "relative", marginBottom: 16, borderRadius: 20, overflow: "hidden",
       border: "1px solid rgba(230,196,77,0.45)", boxShadow: "0 20px 50px rgba(0,0,0,0.55), 0 0 0 1px rgba(230,196,77,0.15)" }}>
       <img src="/hero.jpg" alt="" onError={() => setOk(false)}
-        style={{ width: "100%", maxHeight: 200, objectFit: "cover", display: "block" }} />
+        style={{ width: "100%", height: 200, objectFit: "cover", objectPosition: "center 22%", display: "block" }} />
       <div style={{ position: "absolute", inset: 0, background: "linear-gradient(180deg, rgba(7,22,15,0) 40%, rgba(7,22,15,0.55) 100%)" }} />
     </div>
   );
@@ -3409,12 +4662,32 @@ function SetupNotice() {
 // ============================================================
 // 11. STYLES
 // ============================================================
-const ink = "#EAF3EC", paper = "#0c241d", accent = "#2bd07a", line = "rgba(230,196,77,0.18)";
-const lime = "#7CC243", mango = "#F5A623", berry = "#E0457B", sky = "#2FA7D8", grape = "#7C5CD6";
-const gold = "#C9A227", goldLt = "#E6C44D", darkbg = "#0c241d", darkbg2 = "#11342a", darkcard = "rgba(255,255,255,0.05)";
-const cardBg = "rgba(255,255,255,0.05)", muted = "rgba(234,243,236,0.55)";
-const S = {
+export const ink = "#EAF3EC", paper = "#0c241d", accent = "#2bd07a", line = "rgba(230,196,77,0.18)";
+export const lime = "#7CC243", mango = "#F5A623", berry = "#E0457B", sky = "#2FA7D8", grape = "#7C5CD6";
+export const gold = "#C9A227", goldLt = "#E6C44D", darkbg = "#0c241d", darkbg2 = "#11342a", darkcard = "rgba(255,255,255,0.05)";
+// Native <option> popups ignore the parent <select>'s CSS in most browsers —
+// this has to go on every <option> inside an S.inputDark select, or its text
+// renders unreadably (dark text/background mismatch) until the row is hovered.
+export const optionDark = { background: darkbg, color: "#EAF3EC" };
+export const cardBg = "rgba(255,255,255,0.05)", muted = "rgba(234,243,236,0.55)";
+export const S = {
   shell: { maxWidth: 520, margin: "0 auto", minHeight: "100vh", background: `radial-gradient(130% 70% at 50% -10%, ${darkbg2} 0%, ${darkbg} 55%, #07160f 100%)`, fontFamily: "'Inter', system-ui, sans-serif", color: ink, paddingBottom: 60, position: "relative" },
+
+  // Desktop shell (>=900px, see useIsDesktop): fixed-width sidebar + a wide
+  // scrolling content pane, replacing the mobile shell's header+top-tabs.
+  deskShell: { display: "flex", minHeight: "100vh", background: `radial-gradient(130% 70% at 50% -10%, ${darkbg2} 0%, ${darkbg} 55%, #07160f 100%)`, fontFamily: "'Inter', system-ui, sans-serif", color: ink, position: "relative" },
+  deskSidebar: { width: 260, flexShrink: 0, display: "flex", flexDirection: "column", padding: "26px 18px", borderRight: `1px solid ${line}`, background: "rgba(7,22,15,0.35)", position: "sticky", top: 0, height: "100vh", zIndex: 1 },
+  deskBrand: { display: "flex", alignItems: "center", gap: 12, padding: "0 6px 22px" },
+  deskBrandIcon: { width: 40, height: 40, borderRadius: 12, background: `linear-gradient(150deg,${goldLt},${gold})`, color: darkbg, display: "grid", placeItems: "center", flexShrink: 0, boxShadow: "0 8px 18px rgba(201,162,39,0.35)" },
+  deskBrandTitle: { fontSize: 18, fontWeight: 600, fontFamily: "'Fraunces', Georgia, serif", color: ink, lineHeight: 1.2 },
+  deskBrandSub: { fontSize: 11.5, color: muted, textTransform: "uppercase", letterSpacing: "0.05em", marginTop: 2 },
+  deskNav: { display: "flex", flexDirection: "column", gap: 3 },
+  deskNavItem: { textAlign: "left", padding: "11px 14px", border: "none", background: "transparent", fontSize: 14, fontWeight: 600, color: muted, cursor: "pointer", borderRadius: 10 },
+  deskNavItemActive: { background: `linear-gradient(135deg,${accent},${lime})`, color: "#fff", boxShadow: "0 4px 12px rgba(31,157,85,0.3)" },
+  deskSidebarFoot: { display: "flex", flexDirection: "column", gap: 6, paddingTop: 14, borderTop: `1px solid ${line}` },
+  deskFootBtn: { display: "flex", alignItems: "center", gap: 8, background: "rgba(255,255,255,0.05)", border: `1px solid ${line}`, padding: "9px 12px", borderRadius: 10, fontSize: 13, color: ink, cursor: "pointer", justifyContent: "flex-start" },
+  deskMain: { flex: 1, minWidth: 0, padding: "34px 44px 60px", position: "relative", zIndex: 1 },
+  deskContent: { maxWidth: 1120, margin: "0 auto" },
   loadDot: { width: 22, height: 22, borderRadius: "50%", border: `3px solid ${line}`, borderTopColor: accent, animation: "spin 0.8s linear infinite", margin: "0 auto" },
 
   loginCard: { padding: "30px 26px 40px", maxWidth: 390, margin: "0 auto", textAlign: "center", animation: "popIn 0.5s ease", background: "rgba(12,36,29,0.72)", backdropFilter: "blur(10px)", borderRadius: 26, border: "1px solid rgba(230,196,77,0.25)", boxShadow: "0 30px 70px rgba(0,0,0,0.5)" },
@@ -3432,7 +4705,7 @@ const S = {
   keypad: { display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 10, marginTop: 6 },
   key: { padding: "16px 0", fontSize: 20, fontWeight: 700, background: cardBg, border: `1px solid ${line}`, borderRadius: 14, cursor: "pointer", color: ink, display: "grid", placeItems: "center" },
   keyDark: { background: "rgba(255,255,255,0.06)", border: "1px solid rgba(230,196,77,0.22)", color: "#EAF3EC", boxShadow: "none" },
-  inputDark: { width: "100%", boxSizing: "border-box", padding: "13px 14px", border: "1px solid rgba(230,196,77,0.25)", borderRadius: 12, fontSize: 15, background: "rgba(255,255,255,0.07)", color: "#fff", outline: "none" },
+  inputDark: { width: "100%", boxSizing: "border-box", padding: "13px 14px", border: "1px solid rgba(230,196,77,0.25)", borderRadius: 12, fontSize: 15, background: "rgba(255,255,255,0.07)", color: "#fff", outline: "none", colorScheme: "dark" },
   btnGold: { background: `linear-gradient(135deg,${goldLt},${gold})`, color: darkbg, boxShadow: "0 8px 22px rgba(201,162,39,0.4)", fontWeight: 800 },
 
   header: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "22px 20px 14px", position: "relative", zIndex: 1 },
@@ -3447,7 +4720,11 @@ const S = {
   tabActive: { background: `linear-gradient(135deg,${accent},${lime})`, color: "#fff", boxShadow: "0 4px 12px rgba(31,157,85,0.3)" },
 
   body: { padding: "16px 20px 0", position: "relative", zIndex: 1 },
-  statGrid: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 8 },
+  // Column count for .pk-statgrid lives in CSS (below) so it can widen at the
+  // desktop breakpoint — an inline gridTemplateColumns here would always win
+  // over the media query, so every usage of this style also needs
+  // className="pk-statgrid".
+  statGrid: { display: "grid", gap: 10, marginBottom: 8 },
   stat: { background: cardBg, border: `1px solid ${line}`, borderRadius: 16, padding: "14px 15px", animation: "rise 0.4s ease both" },
   statAccent: { background: `linear-gradient(135deg,${accent} 0%, ${lime} 100%)`, border: "none", boxShadow: "0 12px 26px rgba(31,157,85,0.34)", position: "relative", overflow: "hidden", borderTop: `3px solid ${goldLt}` },
   statIcon: { width: 32, height: 32, borderRadius: 10, background: "rgba(43,208,122,0.15)", color: accent, display: "grid", placeItems: "center", marginBottom: 9 },
@@ -3458,7 +4735,7 @@ const S = {
   hint: { fontSize: 13, color: muted, margin: "-4px 0 12px", lineHeight: 1.5 },
   empty: { fontSize: 13.5, color: muted, textAlign: "center", padding: "20px 0" },
 
-  card: { display: "flex", alignItems: "center", gap: 12, background: cardBg, border: `1px solid rgba(255,255,255,0.08)`, borderRadius: 14, padding: "13px 15px" },
+  card: { display: "flex", alignItems: "center", gap: 12, background: cardBg, border: `1px solid rgba(255,255,255,0.08)`, borderRadius: 14, padding: "14px 16px", boxShadow: "0 2px 10px rgba(0,0,0,0.16)" },
   cardName: { fontSize: 15, fontWeight: 700, letterSpacing: "-0.01em" },
   cardMeta: { fontSize: 12.5, color: muted, marginTop: 2 },
   lowTag: { fontSize: 10, background: "#FFE2E2", color: "#C0392B", padding: "2px 7px", borderRadius: 20, fontWeight: 700, marginLeft: 6, verticalAlign: "middle" },
@@ -3520,6 +4797,23 @@ const S = {
   receipt: { background: "#123026", border: `1px solid ${line}`, borderRadius: 14, padding: "18px 16px" },
   receiptDivider: { borderTop: `1px dashed ${line}`, margin: "10px 0" },
   receiptLine: { display: "flex", justifyContent: "space-between", fontSize: 14, padding: "3px 0" },
+
+  // Chat-style ordering thread: one outgoing bubble per order_requests row,
+  // plus a visually distinct "system reply" bubble once it's resolved.
+  chatThread: { display: "flex", flexDirection: "column", gap: 10, padding: "2px" },
+  // A bounded-height flex column: the message list is the only part that
+  // scrolls (flex:1), the composer is a normal trailing flex sibling — so it
+  // just sits at the bottom of the box instead of scrolling away, and on
+  // mobile, using dvh for the outer height means the box (and the composer
+  // pinned to its bottom) automatically shrinks to sit right above the
+  // on-screen keyboard rather than being hidden behind it or off-screen.
+  chatPanel: { display: "flex", flexDirection: "column", minHeight: 0 },
+  chatPanelScroll: { flex: 1, minHeight: 0, overflowY: "auto", padding: "2px 2px 10px" },
+  chatComposerBar: { borderTop: `1px solid ${line}`, paddingTop: 10, marginTop: 2, background: darkbg2 },
+  chatBubbleOut: { alignSelf: "flex-end", maxWidth: "88%", background: `linear-gradient(135deg,${accent},${lime})`, color: "#fff", borderRadius: "14px 14px 4px 14px", padding: "10px 13px", fontSize: 13.5, lineHeight: 1.5, whiteSpace: "pre-wrap", boxShadow: "0 4px 12px rgba(31,157,85,0.25)" },
+  chatBubbleSystem: { alignSelf: "flex-start", maxWidth: "88%", background: "rgba(255,255,255,0.06)", border: `1px solid ${line}`, color: ink, borderRadius: "14px 14px 14px 4px", padding: "9px 13px", fontSize: 13, fontWeight: 700 },
+  chatBubbleSystemBad: { background: "rgba(192,57,43,0.16)", border: "1px solid rgba(192,57,43,0.35)", color: "#FF8B7A" },
+  chatMeta: { fontSize: 10.5, opacity: 0.75, marginTop: 4, fontWeight: 500 },
 };
 
 if (typeof document !== "undefined" && !document.getElementById("sf-spin")) {
@@ -3543,6 +4837,10 @@ if (typeof document !== "undefined" && !document.getElementById("sf-spin")) {
     button{transition:transform 0.08s ease, filter 0.12s ease}
     button:active{transform:scale(0.97)}
     @media (prefers-reduced-motion: reduce){*{animation:none !important}}
+    .pk-statgrid{grid-template-columns:1fr 1fr;}
+    @media (min-width: 900px){.pk-statgrid{grid-template-columns:repeat(4,1fr);gap:14px;}}
+    .pk-shopgrid{display:flex;flex-direction:column;gap:8px;}
+    @media (min-width: 900px){.pk-shopgrid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;}}
   `;
   document.head.appendChild(st);
 }
