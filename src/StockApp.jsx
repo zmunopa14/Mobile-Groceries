@@ -307,6 +307,25 @@ function PayScreen({ user, businessName, onExit, onSubmitted }) {
   );
 }
 
+function PendingApprovalScreen({ businessName, onExit, onRefresh }) {
+  return (
+    <div style={S.loginDarkShell}>
+      <div style={{ ...S.loginCard, position: "relative", zIndex: 1, maxWidth: 400 }}>
+        <div style={S.logoMark}><PamusikaMark size={30} /></div>
+        <h1 style={{ ...S.loginTitle, fontSize: 28 }}>Almost there</h1>
+        <p style={S.loginSub}>
+          <b style={{ color: goldLt }}>{businessName}</b> is registered but still waiting to be approved. This
+          only takes a moment — try again shortly.
+        </p>
+        <button style={{ ...S.btn, ...S.btnGold, width: "100%", marginBottom: 8 }} onClick={onRefresh}>
+          <RefreshCw size={16} /> Check again
+        </button>
+        <button style={{ ...S.btn, ...S.btnGhost, width: "100%" }} onClick={onExit}>Sign out</button>
+      </div>
+    </div>
+  );
+}
+
 function OwnerScreen({ user, businesses, onExit, onChange }) {
   const [payments, setPayments] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -333,11 +352,45 @@ function OwnerScreen({ user, businesses, onExit, onChange }) {
   };
 
   const pending = payments.filter((p) => p.status === "pending");
+  const pendingBiz = businesses.filter((b) => b.approved === false);
+
+  const approveBiz = async (id) => {
+    setBusy(true);
+    try { await sb.patch("businesses", `id=eq.${id}`, { approved: true }); onChange(); }
+    catch (e) { alert(e.message); }
+    setBusy(false);
+  };
+  const rejectBiz = async (id) => {
+    if (!window.confirm("Permanently remove this business and its account? This can't be undone.")) return;
+    setBusy(true);
+    try {
+      await sb.del("members", `business_id=eq.${id}`);
+      await sb.del("businesses", `id=eq.${id}`);
+      onChange();
+    } catch (e) { alert(e.message); }
+    setBusy(false);
+  };
 
   return (
     <div style={S.shell}>
       <Header title="Owner" sub="Payment approvals" onExit={onExit} onRefresh={load} />
       <div style={S.body}>
+        {pendingBiz.length > 0 && <>
+          <SectionTitle>Pending businesses</SectionTitle>
+          <p style={S.hint}>New self-registered businesses waiting to be let in — approve them, or reject to remove a throwaway account.</p>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 20 }}>
+            {pendingBiz.map((b) => (
+              <div key={b.id} style={{ ...S.card, flexDirection: "column", alignItems: "stretch", gap: 8 }}>
+                <div style={{ flex: 1 }}><div style={S.cardName}>{b.name}</div></div>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button style={{ ...S.btn, ...S.btnDark, flex: 1 }} disabled={busy} onClick={() => approveBiz(b.id)}><Check size={16} /> Approve</button>
+                  <button style={{ ...S.btn, ...S.btnGhost, flex: 1, color: "#FF8B7A" }} disabled={busy} onClick={() => rejectBiz(b.id)}>Reject</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </>}
+
         <SectionTitle>Businesses</SectionTitle>
         <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 20 }}>
           {businesses.filter((b) => b.id !== 0).map((b) => {
@@ -389,7 +442,13 @@ export default function App() {
   const [tick, setTick] = useState(0); // force re-check after payment approval
 
   const loadBiz = useCallback(async () => {
-    try { setBizList(await sb.select("businesses", "select=id,name,paid_until&order=id.asc")); } catch {}
+    try { setBizList(await sb.select("businesses", "select=id,name,paid_until,approved&order=id.asc")); }
+    catch {
+      // `approved` column may not exist yet on older deployments — fall
+      // back to unblocked (every business behaves as already-approved).
+      try { setBizList((await sb.select("businesses", "select=id,name,paid_until&order=id.asc")).map((b) => ({ ...b, approved: true }))); }
+      catch {}
+    }
   }, []);
   useEffect(() => { loadBiz(); }, [loadBiz, user, tick]);
 
@@ -406,9 +465,17 @@ export default function App() {
     return <OwnerScreen user={user} businesses={bizList} onExit={() => setUser(null)} onChange={() => setTick((t) => t + 1)} />;
   }
 
+  const biz = bizList.find((b) => b.id === user.business_id);
+
+  // A newly self-registered business waits for the Owner to approve it —
+  // stops someone just spinning up throwaway accounts. Existing businesses
+  // are unaffected (they default to already-approved).
+  if (biz && biz.approved === false) {
+    return <PendingApprovalScreen businessName={businessName} onExit={() => setUser(null)} onRefresh={() => setTick((t) => t + 1)} />;
+  }
+
   // Subscription gate: if this business's paid_until has passed, lock with pay
   // screen — UNLESS this specific user is exempt (e.g. Munopa).
-  const biz = bizList.find((b) => b.id === user.business_id);
   const paidUntil = biz && biz.paid_until ? new Date(biz.paid_until) : null;
   const isPaid = paidUntil ? paidUntil.getTime() > Date.now() : true; // if unknown, don't lock
   if (bizList.length > 0 && !isPaid && !user.exempt) {
@@ -742,6 +809,10 @@ export function Admin({ user, onExit, businessName, onSell }) {
   const [tab, setTab] = useState("overview");
   const [cats, setCats] = useState([]);   // this business's category names
   const [hasIncomingOrders, setHasIncomingOrders] = useState(false);
+  const [reportWeekday, setReportWeekday] = useState(2); // 0=Sun..6=Sat, default Tuesday
+
+  useEffect(() => { fetchReportWeekStartDay(user.business_id).then(setReportWeekday); }, [user.business_id]);
+  const reportTabLabel = reportWeekday === 2 ? "Tuesday report" : "Weekly report";
 
   const loadCats = useCallback(async () => {
     try {
@@ -818,7 +889,7 @@ export function Admin({ user, onExit, businessName, onSell }) {
         ["overview","Overview"],["stock","Stock"],["transactions","Sales"],["order","Order"],
         ...(hasIncomingOrders ? [["supplierOrders","Orders"]] : []),
         ["community","Community"],
-        ["customers","Customers"],["compare","Compare"],["cashups","Cash-ups"],["report","Tuesday report"],["team","Team"],
+        ["customers","Customers"],["compare","Compare"],["cashups","Cash-ups"],["report",reportTabLabel],["team","Team"],
       ]}
       onExit={onExit} onRefresh={refresh}
       decoration={<LightWatermark />}
@@ -849,7 +920,8 @@ export function Admin({ user, onExit, businessName, onSell }) {
         {tab === "customers" && <Customers sales={sales} />}
         {tab === "compare" && <Compare sales={sales} />}
         {tab === "cashups" && <CashUps businessId={user.business_id} sales={sales} />}
-        {tab === "report" && <Report sales={sales} products={products} low={[...out, ...low]} cats={cats} />}
+        {tab === "report" && <Report sales={sales} products={products} low={[...out, ...low]} cats={cats} businessId={user.business_id} businessName={businessName}
+          weekStartDay={reportWeekday} onWeekStartDayChange={setReportWeekday} />}
         {tab === "team" && <TeamManager onChange={refresh} businessId={user.business_id} sales={sales} user={user} />}
       </>}
     </AppShell>
@@ -2855,6 +2927,105 @@ async function saveSupplierLink(businessId, fields) {
   return sb.insert("business_supplier_links", { business_id: businessId, ...row });
 }
 
+async function fetchSalarySettings(businessId) {
+  const fallback = { outside_salary: 0, outside_tithe_pct: 10 };
+  try {
+    const rows = await sb.select("business_salary_settings", `business_id=eq.${businessId}`);
+    return rows[0] || fallback;
+  } catch { return fallback; } // table may not exist yet on older deployments
+}
+async function saveSalarySettings(businessId, fields) {
+  const existing = await sb.select("business_salary_settings", `business_id=eq.${businessId}`).catch(() => []);
+  const row = { ...fields, updated_at: new Date().toISOString() };
+  if (existing.length) return sb.patch("business_salary_settings", `business_id=eq.${businessId}`, row);
+  return sb.insert("business_salary_settings", { business_id: businessId, ...row });
+}
+
+// One row per (business, category) — a business selling for several
+// companies can draw a different salary percentage from each one, each with
+// its own "to God" percentage on that resulting salary amount.
+async function fetchSalaryCategories(businessId) {
+  try { return await sb.select("business_salary_categories", `business_id=eq.${businessId}`); }
+  catch { return []; } // table may not exist yet on older deployments
+}
+// `rows` is { [category]: { pct, tithe_pct } } — only categories whose
+// values actually changed are written, so saving doesn't touch every
+// category every time.
+async function saveSalaryCategoryPcts(businessId, existingRows, rows) {
+  const existingByCat = {};
+  existingRows.forEach((r) => { existingByCat[r.category] = r; });
+  const writes = Object.entries(rows)
+    .filter(([category, v]) => {
+      const ex = existingByCat[category];
+      return Number(ex?.pct || 0) !== Number(v.pct) || Number(ex?.tithe_pct ?? 10) !== Number(v.tithe_pct);
+    })
+    .map(([category, v]) => {
+      const row = { pct: Number(v.pct) || 0, tithe_pct: Number(v.tithe_pct) || 0, updated_at: new Date().toISOString() };
+      const enc = encodeURIComponent(category);
+      if (existingByCat[category]) return sb.patch("business_salary_categories", `business_id=eq.${businessId}&category=eq.${enc}`, row);
+      return sb.insert("business_salary_categories", { business_id: businessId, category, ...row });
+    });
+  await Promise.all(writes);
+}
+
+// Which of a business's own categories are actually resold on behalf of
+// another registered Pamusika business (e.g. Samah Valley selling for
+// Munonwa) — { [category]: target_business_id }.
+async function fetchCategoryLinks(businessId) {
+  try { return await sb.select("category_business_links", `business_id=eq.${businessId}`); }
+  catch { return []; } // table may not exist yet on older deployments
+}
+async function saveCategoryLink(businessId, category, targetBusinessId) {
+  const enc = encodeURIComponent(category);
+  const existing = await sb.select("category_business_links", `business_id=eq.${businessId}&category=eq.${enc}`).catch(() => []);
+  const row = { target_business_id: targetBusinessId, updated_at: new Date().toISOString() };
+  if (existing.length) return sb.patch("category_business_links", `business_id=eq.${businessId}&category=eq.${enc}`, row);
+  return sb.insert("category_business_links", { business_id: businessId, category, ...row });
+}
+async function removeCategoryLink(businessId, category) {
+  return sb.del("category_business_links", `business_id=eq.${businessId}&category=eq.${encodeURIComponent(category)}`);
+}
+
+// Sends one category's week to the business it's linked to — sending again
+// for the same week updates the same row (the unique constraint on
+// receiving_business_id/from_business_id/category/week_start) rather than
+// piling up duplicates.
+async function sendResellerReport({ receivingBusinessId, fromBusinessId, fromBusinessName, category, weekStart, weekEnd, totalSales, totalTithe }) {
+  const enc = encodeURIComponent(category);
+  const existing = await sb.select("received_reseller_reports",
+    `receiving_business_id=eq.${receivingBusinessId}&from_business_id=eq.${fromBusinessId}&category=eq.${enc}&week_start=eq.${weekStart}`
+  ).catch(() => []);
+  const row = { total_sales: totalSales, total_tithe: totalTithe, from_business_name: fromBusinessName, week_end: weekEnd };
+  if (existing.length) return sb.patch("received_reseller_reports", `id=eq.${existing[0].id}`, row);
+  return sb.insert("received_reseller_reports", { receiving_business_id: receivingBusinessId, from_business_id: fromBusinessId, category, week_start: weekStart, ...row });
+}
+// Matched by where the report's LAST day (week_end) falls, not by an exact
+// week_start match — the sender and receiver can have different "week
+// starts on" settings (see report-settings.sql), so a report covering a
+// period ending Monday belongs to whichever of the receiver's own weeks
+// Monday falls in, even if the receiver's own week doesn't start Tuesday.
+async function fetchReceivedReports(businessId, rangeStartStr, rangeEndStr) {
+  try {
+    return await sb.select("received_reseller_reports",
+      `receiving_business_id=eq.${businessId}&week_end=gte.${rangeStartStr}&week_end=lte.${rangeEndStr}`);
+  } catch { return []; } // table may not exist yet on older deployments
+}
+
+// Which day of the week a business's report cycle starts on — defaults to
+// Tuesday (2) so nothing changes until someone deliberately sets this.
+async function fetchReportWeekStartDay(businessId) {
+  try {
+    const rows = await sb.select("business_report_settings", `business_id=eq.${businessId}`);
+    return rows[0] ? Number(rows[0].week_start_day) : 2;
+  } catch { return 2; } // table may not exist yet on older deployments
+}
+async function saveReportWeekStartDay(businessId, day) {
+  const existing = await sb.select("business_report_settings", `business_id=eq.${businessId}`).catch(() => []);
+  const row = { week_start_day: day, updated_at: new Date().toISOString() };
+  if (existing.length) return sb.patch("business_report_settings", `business_id=eq.${businessId}`, row);
+  return sb.insert("business_report_settings", { business_id: businessId, ...row });
+}
+
 // A product's own supplier if it has one, else the business's default link
 // (already-loaded `business_supplier_links` row) — a product with no
 // override just inherits whatever the business has set as default, same as
@@ -4069,10 +4240,48 @@ function Compare({ sales }) {
   );
 }
 
-function Report({ sales, products, low, cats = [] }) {
-  // Week runs Tuesday → Monday. Let the admin step back through weeks.
+const WEEKDAY_NAMES = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
+
+function Report({ sales, products, low, cats = [], businessId, businessName, weekStartDay = 2, onWeekStartDayChange }) {
+  // The week runs from whichever day is chosen (default Tuesday) to the day
+  // before it, next week. Let the admin step back through weeks, or switch
+  // to picking an exact date range instead — not everyone reports weekly.
   const [weekOffset, setWeekOffset] = useState(0);   // 0 = current week
   const [cat, setCat] = useState("All");
+  const [customRange, setCustomRange] = useState(false);
+  const [fromDate, setFromDate] = useState(() => localDateStr(new Date()));
+  const [toDate, setToDate] = useState(() => localDateStr(new Date()));
+  const [salary, setSalary] = useState({ outside_salary: 0, outside_tithe_pct: 10 });
+  const [salaryCats, setSalaryCats] = useState([]); // [{category, pct}] — a business can pull salary from several
+  const [editingSalary, setEditingSalary] = useState(false);
+  const [copied, setCopied] = useState(false);
+  // A business reselling for other companies (e.g. on consignment) may not
+  // want every company's sales going out in ITS OWN shared report — this
+  // only affects what "Share report" sends, never the on-screen totals
+  // above, which still show everything for the owner's own tracking.
+  const [excludedCats, setExcludedCats] = useState(() => new Set());
+  const toggleExcluded = (c) => setExcludedCats((prev) => {
+    const next = new Set(prev);
+    if (next.has(c)) next.delete(c); else next.add(c);
+    return next;
+  });
+  // A category resold on behalf of another registered Pamusika business —
+  // e.g. Samah Valley selling for Munonwa — can be sent straight into that
+  // business's own report instead of (or as well as) staying in this one.
+  const [categoryLinks, setCategoryLinks] = useState([]); // [{category, target_business_id}]
+  const [receivedReports, setReceivedReports] = useState([]); // reports sent TO this business, this week
+  const [resaleBizNames, setResaleBizNames] = useState({}); // business_id -> name
+  const [linkingCat, setLinkingCat] = useState(null); // category currently being linked/relinked
+  const [sendingCat, setSendingCat] = useState(null); // category currently being sent, for a busy spinner
+  const [sentToast, setSentToast] = useState("");
+
+  const loadSalary = useCallback(async () => {
+    if (!businessId) return;
+    const [settings, catPcts] = await Promise.all([fetchSalarySettings(businessId), fetchSalaryCategories(businessId)]);
+    setSalary(settings);
+    setSalaryCats(catPcts);
+  }, [businessId]);
+  useEffect(() => { loadSalary(); }, [loadSalary]);
 
   const catOf = {}, pctOf = {};
   (products || []).forEach((p) => { catOf[p.name] = p.category || "Uncategorised"; pctOf[p.name] = Number(p.tithe_pct) || 0; });
@@ -4081,11 +4290,38 @@ function Report({ sales, products, low, cats = [] }) {
 
   const now = new Date();
   const dow = now.getDay();
-  const daysSinceTue = (dow - 2 + 7) % 7;
-  const weekStart = new Date(now); weekStart.setHours(0,0,0,0);
-  weekStart.setDate(now.getDate() - daysSinceTue - weekOffset * 7); // Tuesday
-  const weekEnd = new Date(weekStart); weekEnd.setDate(weekStart.getDate() + 6); // Monday
-  const startStr = localDateStr(weekStart), endStr = localDateStr(weekEnd);
+  const daysSinceStart = (dow - weekStartDay + 7) % 7;
+  const cycleStart = new Date(now); cycleStart.setHours(0,0,0,0);
+  cycleStart.setDate(now.getDate() - daysSinceStart - weekOffset * 7);
+  const cycleEnd = new Date(cycleStart); cycleEnd.setDate(cycleStart.getDate() + 6);
+  // A custom date range replaces the weekly cycle entirely when it's on —
+  // not everyone reports on a fixed weekly schedule.
+  const weekStart = customRange ? new Date(fromDate + "T00:00:00") : cycleStart;
+  const weekEnd = customRange ? new Date(toDate + "T00:00:00") : cycleEnd;
+  const startStr = customRange ? fromDate : localDateStr(weekStart);
+  const endStr = customRange ? toDate : localDateStr(weekEnd);
+  const startDayName = WEEKDAY_NAMES[weekStartDay];
+  const endDayName = WEEKDAY_NAMES[(weekStartDay + 6) % 7];
+  const startDayAbbr = startDayName.slice(0, 3), endDayAbbr = endDayName.slice(0, 3);
+  const rangeLabel = customRange
+    ? `${weekStart.toLocaleDateString()} → ${weekEnd.toLocaleDateString()}`
+    : `${weekStart.toLocaleDateString()} (${startDayAbbr}) → ${weekEnd.toLocaleDateString()} (${endDayAbbr})`;
+
+  const loadResale = useCallback(async () => {
+    if (!businessId) return;
+    const [links, received] = await Promise.all([fetchCategoryLinks(businessId), fetchReceivedReports(businessId, startStr, endStr)]);
+    setCategoryLinks(links);
+    setReceivedReports(received);
+    const ids = [...new Set([...links.map((l) => l.target_business_id), ...received.map((r) => r.from_business_id)])];
+    if (ids.length) {
+      try {
+        const bizzes = await sb.select("businesses", `id=in.(${ids.join(",")})&select=id,name`);
+        const map = {}; bizzes.forEach((b) => { map[b.id] = b.name; });
+        setResaleBizNames(map);
+      } catch {}
+    }
+  }, [businessId, startStr, endStr]);
+  useEffect(() => { loadResale(); }, [loadResale]);
 
   const inWeek = (s) => {
     const d = localDateStr(new Date(s.sold_at));
@@ -4107,8 +4343,89 @@ function Report({ sales, products, low, cats = [] }) {
     catRows[c].sales += Number(s.total);
     catRows[c].tithe += titheOf(s);
   });
-  const weekTotalSales = weekRows.reduce((a, s) => a + Number(s.total), 0);
-  const weekTotalTithe = weekRows.reduce((a, s) => a + titheOf(s), 0);
+  // Reports sent in by resellers land here as their own distinguishable
+  // row (tagged with who it's from), but still counted into the one
+  // combined total below — never mixed into a real category's own numbers.
+  receivedReports.forEach((r) => {
+    const label = `Received: ${r.from_business_name}`;
+    catRows[label] = catRows[label] || { sales: 0, tithe: 0 };
+    catRows[label].sales += Number(r.total_sales);
+    catRows[label].tithe += Number(r.total_tithe);
+  });
+  const weekTotalSales = Object.values(catRows).reduce((a, c) => a + c.sales, 0);
+  const weekTotalTithe = Object.values(catRows).reduce((a, c) => a + c.tithe, 0);
+
+  const linkFor = (c) => categoryLinks.find((l) => l.category === c);
+  const sendCategoryReport = async (c) => {
+    const link = linkFor(c);
+    if (!link) return;
+    setSendingCat(c);
+    try {
+      const d = catRows[c] || { sales: 0, tithe: 0 };
+      await sendResellerReport({
+        receivingBusinessId: link.target_business_id, fromBusinessId: businessId, fromBusinessName: businessName,
+        category: c, weekStart: startStr, weekEnd: endStr, totalSales: d.sales, totalTithe: d.tithe,
+      });
+      setExcludedCats((prev) => new Set(prev).add(c)); // sent elsewhere — leave it out of this business's own report
+      setSentToast(`Sent to ${resaleBizNames[link.target_business_id] || "the other business"}`);
+      setTimeout(() => setSentToast(""), 2000);
+    } catch (e) { alert(e.message); }
+    setSendingCat(null);
+  };
+  const receivedTotal = receivedReports.reduce((a, r) => a + Number(r.total_sales), 0);
+  const receivedTithe = receivedReports.reduce((a, r) => a + Number(r.total_tithe), 0);
+
+  // A business can sell for several companies/categories at once, each with
+  // its own salary percentage — never one combined rate on the total.
+  // Looked up from catRows (below) so it always reflects that week's actual
+  // sales per company, regardless of the page's own category filter above.
+  const salaryBreakdown = salaryCats
+    .filter((c) => Number(c.pct) > 0)
+    .map((c) => {
+      const catSales = catRows[c.category]?.sales || 0;
+      const amount = catSales * Number(c.pct) / 100;
+      const tithePct = Number(c.tithe_pct ?? 10);
+      return { category: c.category, pct: Number(c.pct), sales: catSales, amount, tithePct, tithe: amount * tithePct / 100 };
+    });
+  const salesSalary = salaryBreakdown.reduce((a, c) => a + c.amount, 0);
+  const salesSalaryTithe = salaryBreakdown.reduce((a, c) => a + c.tithe, 0);
+  const outsideSalary = Number(salary.outside_salary) || 0;
+  const outsideTithe = outsideSalary * (Number(salary.outside_tithe_pct) || 0) / 100;
+
+  const reportText = () => {
+    // Only what's still checked under "Include in shared report" goes out —
+    // a business reselling for other companies can leave those off its own
+    // report entirely, while still seeing them in its own totals above.
+    const sentRows = weekRows.filter((s) => !excludedCats.has(catOf[s.product_name] || "Uncategorised"));
+    // What resellers sent in is real income for this business too, so it's
+    // folded into the one combined figure that goes out — same as it's
+    // folded into the totals shown on screen.
+    const sentSales = sentRows.reduce((a, s) => a + Number(s.total), 0) + receivedTotal;
+    const sentTithe = sentRows.reduce((a, s) => a + titheOf(s), 0) + receivedTithe;
+    const sentSalaryBreakdown = salaryBreakdown.filter((c) => !excludedCats.has(c.category));
+
+    let out = `${businessName || "Business"} — Weekly report\n${rangeLabel}\n\n`;
+    out += `Sales: ${money(sentSales)}\nTo God (from sales): ${money(sentTithe)}\n`;
+    if (sentSalaryBreakdown.length > 0 || outsideSalary > 0) {
+      out += `\nSalary\n`;
+      sentSalaryBreakdown.forEach((c) => {
+        out += `Salary from ${c.category} sales (${c.pct}%): ${money(c.amount)}\n`;
+        out += `To God from that salary (${c.tithePct}%): ${money(c.tithe)}\n`;
+      });
+      if (outsideSalary > 0) {
+        out += `Salary from my job: ${money(outsideSalary)}\n`;
+        out += `To God from that salary (${salary.outside_tithe_pct}%): ${money(outsideTithe)}\n`;
+      }
+    }
+    return out.trim();
+  };
+  const shareReport = async () => {
+    const t = reportText();
+    try {
+      if (navigator.share) await navigator.share({ title: "Weekly report", text: t });
+      else { await navigator.clipboard.writeText(t); setCopied(true); setTimeout(() => setCopied(false), 1600); }
+    } catch {}
+  };
 
   const byProduct = {};
   rows.forEach((s) => {
@@ -4125,16 +4442,116 @@ function Report({ sales, products, low, cats = [] }) {
         <FileText size={18} />
         <div>
           <div style={{ ...S.cardName, color: "#fff" }}>{cat === "All" ? "Weekly report" : `${cat} — weekly`}</div>
-          <div style={{ ...S.cardMeta, color: "rgba(255,255,255,0.8)" }}>
-            {weekStart.toLocaleDateString()} (Tue) → {weekEnd.toLocaleDateString()} (Mon)
-          </div>
+          <div style={{ ...S.cardMeta, color: "rgba(255,255,255,0.8)" }}>{rangeLabel}</div>
         </div>
       </div>
 
       <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
-        <button style={{ ...S.btn, ...S.btnGhost, flex: 1 }} onClick={() => setWeekOffset(weekOffset + 1)}>‹ Previous</button>
-        <button style={{ ...S.btn, ...S.btnGhost, flex: 1 }} disabled={weekOffset === 0} onClick={() => setWeekOffset(Math.max(0, weekOffset - 1))}>Next ›</button>
+        <button style={{ ...S.btn, flex: 1, ...(!customRange ? S.btnDark : S.btnGhost) }} onClick={() => setCustomRange(false)}>
+          Weekly ({startDayAbbr}–{endDayAbbr})
+        </button>
+        <button style={{ ...S.btn, flex: 1, ...(customRange ? S.btnDark : S.btnGhost) }} onClick={() => setCustomRange(true)}>
+          Pick dates
+        </button>
       </div>
+      {customRange ? (
+        <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+          <label style={{ ...S.fieldWrap, flex: 1, marginBottom: 0 }}>
+            <span style={S.fieldLabel}>From</span>
+            <input style={S.input} type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} />
+          </label>
+          <label style={{ ...S.fieldWrap, flex: 1, marginBottom: 0 }}>
+            <span style={S.fieldLabel}>To</span>
+            <input style={S.input} type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} />
+          </label>
+        </div>
+      ) : (
+        <>
+          <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+            <button style={{ ...S.btn, ...S.btnGhost, flex: 1 }} onClick={() => setWeekOffset(weekOffset + 1)}>‹ Previous</button>
+            <button style={{ ...S.btn, ...S.btnGhost, flex: 1 }} disabled={weekOffset === 0} onClick={() => setWeekOffset(Math.max(0, weekOffset - 1))}>Next ›</button>
+          </div>
+          <label style={{ ...S.fieldWrap, marginBottom: 12 }}>
+            <span style={S.fieldLabel}>Your report week starts on</span>
+            <select style={S.input} value={weekStartDay}
+              onChange={async (e) => {
+                const day = parseInt(e.target.value);
+                setWeekOffset(0);
+                if (onWeekStartDayChange) onWeekStartDayChange(day); // reflect immediately regardless of save
+                try { await saveReportWeekStartDay(businessId, day); } catch {} // table may not exist yet
+              }}>
+              {WEEKDAY_NAMES.map((d, i) => <option key={i} value={i}>{d}</option>)}
+            </select>
+          </label>
+        </>
+      )}
+      {cats.length > 0 && (
+        <div style={{ marginBottom: 12 }}>
+          <span style={S.fieldLabel}>Include in shared report</span>
+          <p style={{ ...S.hint, marginTop: 2 }}>
+            Selling for other companies on top of your own? Untick theirs, or link it to their Pamusika business
+            and send it straight into their own report instead.
+          </p>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {cats.map((c) => {
+              const included = !excludedCats.has(c);
+              const link = linkFor(c);
+              return (
+                <div key={c} style={{ ...S.card, flexWrap: "wrap" }}>
+                  <button onClick={() => toggleExcluded(c)}
+                    style={{ ...S.btn, padding: "7px 12px", fontSize: 12.5, ...(included ? S.btnDark : S.btnGhost) }}>
+                    {included ? <Check size={13} /> : null} {c}
+                  </button>
+                  <div style={{ flex: 1 }} />
+                  {link ? (
+                    <>
+                      <span style={{ ...S.cardMeta, marginRight: 4 }}>→ {resaleBizNames[link.target_business_id] || `Business ${link.target_business_id}`}</span>
+                      <button style={{ ...S.btn, ...S.btnGhost, padding: "6px 10px", fontSize: 12 }}
+                        disabled={sendingCat === c} onClick={() => sendCategoryReport(c)}>
+                        {sendingCat === c ? "Sending…" : "Send"}
+                      </button>
+                      <button style={{ ...S.btn, ...S.btnGhost, padding: "6px 8px" }} onClick={() => setLinkingCat(c)}>
+                        <Pencil size={12} />
+                      </button>
+                    </>
+                  ) : (
+                    <button style={{ ...S.btn, ...S.btnGhost, padding: "6px 10px", fontSize: 12 }} onClick={() => setLinkingCat(c)}>
+                      Link to a business
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+          {sentToast && <p style={{ ...S.hint, color: accent, marginTop: 6 }}>✓ {sentToast}</p>}
+        </div>
+      )}
+      {linkingCat && (
+        <CategoryLinkModal category={linkingCat} currentTargetId={linkFor(linkingCat)?.target_business_id}
+          onClose={() => setLinkingCat(null)}
+          onSave={async (targetId) => { await saveCategoryLink(businessId, linkingCat, targetId); setLinkingCat(null); await loadResale(); }}
+          onRemove={async () => { await removeCategoryLink(businessId, linkingCat); setLinkingCat(null); await loadResale(); }} />
+      )}
+      {receivedReports.length > 0 && (
+        <div style={{ marginBottom: 12 }}>
+          <span style={S.fieldLabel}>Received from resellers this week</span>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 6 }}>
+            {receivedReports.map((r) => (
+              <div key={r.id} style={S.card}>
+                <div style={{ flex: 1 }}>
+                  <div style={S.cardName}>{r.from_business_name}</div>
+                  <div style={S.cardMeta}>{r.category}</div>
+                </div>
+                <div style={{ fontWeight: 800 }}>{money(r.total_sales)}</div>
+              </div>
+            ))}
+          </div>
+          <p style={{ ...S.hint, marginTop: 6 }}>Already counted in the totals below — shown here just so it's clear where it came from.</p>
+        </div>
+      )}
+      <button style={{ ...S.btn, ...S.btnDark, width: "100%", marginBottom: 12 }} onClick={shareReport}>
+        <Send size={16} /> {copied ? "✓ Copied" : "Share report"}
+      </button>
       <label style={{ ...S.fieldWrap, marginBottom: 12 }}>
         <span style={S.fieldLabel}>Company / category</span>
         <select style={S.input} value={cat} onChange={(e) => setCat(e.target.value)}>
@@ -4174,6 +4591,71 @@ function Report({ sales, products, low, cats = [] }) {
         </div>
       </div>
 
+      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between" }}>
+        <SectionTitle>Salary & giving</SectionTitle>
+        <button style={{ ...S.btn, ...S.btnGhost, padding: "6px 10px", fontSize: 12.5 }} onClick={() => setEditingSalary(true)}>
+          <Pencil size={13} /> Edit
+        </button>
+      </div>
+      <p style={S.hint}>
+        Each company can have its own salary percentage — not one combined rate on the business's total.
+      </p>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {salaryBreakdown.map((c) => (
+          <React.Fragment key={c.category}>
+            <div style={S.card}>
+              <div style={{ flex: 1 }}>
+                <div style={S.cardName}>Salary from {c.category}</div>
+                <div style={S.cardMeta}>{c.pct}% of {money(c.sales)}</div>
+              </div>
+              <div style={{ fontWeight: 800 }}>{money(c.amount)}</div>
+            </div>
+            <div style={S.card}>
+              <div style={{ flex: 1 }}>
+                <div style={S.cardName}>To God from that salary</div>
+                <div style={S.cardMeta}>{c.tithePct}%</div>
+              </div>
+              <div style={{ fontWeight: 800, color: goldLt }}>{money(c.tithe)}</div>
+            </div>
+          </React.Fragment>
+        ))}
+        {salaryBreakdown.length > 1 && (
+          <>
+            <div style={{ ...S.card, background: "rgba(255,255,255,0.04)" }}>
+              <div style={{ flex: 1 }}><div style={S.cardName}>Total salary from sales</div></div>
+              <div style={{ fontWeight: 800, color: accent }}>{money(salesSalary)}</div>
+            </div>
+            <div style={{ ...S.card, background: "rgba(255,255,255,0.04)" }}>
+              <div style={{ flex: 1 }}><div style={S.cardName}>Total to God from that salary</div></div>
+              <div style={{ fontWeight: 800, color: goldLt }}>{money(salesSalaryTithe)}</div>
+            </div>
+          </>
+        )}
+        {outsideSalary > 0 && (
+          <>
+            <div style={S.card}>
+              <div style={{ flex: 1 }}><div style={S.cardName}>Salary from my job</div></div>
+              <div style={{ fontWeight: 800 }}>{money(outsideSalary)}</div>
+            </div>
+            <div style={S.card}>
+              <div style={{ flex: 1 }}>
+                <div style={S.cardName}>To God from that salary</div>
+                <div style={S.cardMeta}>{salary.outside_tithe_pct}%</div>
+              </div>
+              <div style={{ fontWeight: 800, color: goldLt }}>{money(outsideTithe)}</div>
+            </div>
+          </>
+        )}
+        {salaryBreakdown.length === 0 && outsideSalary <= 0 && (
+          <p style={S.empty}>Nothing set up yet — tap Edit to add a salary percentage or a salary from your job.</p>
+        )}
+      </div>
+      {editingSalary && (
+        <SalarySettingsModal businessId={businessId} salary={salary} salaryCats={salaryCats} cats={cats}
+          onSaved={(s, cp) => { setSalary(s); setSalaryCats(cp); setEditingSalary(false); }}
+          onClose={() => setEditingSalary(false)} />
+      )}
+
       <SectionTitle>By product{cat !== "All" ? ` — ${cat}` : ""}</SectionTitle>
       {Object.keys(byProduct).length === 0 && <p style={S.empty}>No sales for this week{cat !== "All" ? ` in ${cat}` : ""}.</p>}
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
@@ -4200,6 +4682,137 @@ function Report({ sales, products, low, cats = [] }) {
         </div>
       </>}
     </>
+  );
+}
+
+// Business-wide salary settings (not per-seller) — a percentage of the
+// week's sales, and a separate fixed salary from the owner's own job
+// elsewhere with its own "to God" percentage, editable here.
+// Picks which registered Pamusika business one category is actually
+// resold on behalf of — same find_business lookup Login/SupplierPicker use.
+function CategoryLinkModal({ category, currentTargetId, onClose, onSave, onRemove }) {
+  const [q, setQ] = useState("");
+  const [results, setResults] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  const search = async () => {
+    if (!q.trim()) return;
+    setBusy(true);
+    try { setResults(await sb.rpc("find_business", { p_name: q.trim() })); } catch { setResults([]); }
+    setBusy(false);
+  };
+  const pick = async (b) => {
+    setBusy(true); setErr("");
+    try { await onSave(b.id); } catch (e) { setErr(e.message); setBusy(false); }
+  };
+
+  return (
+    <Modal onClose={onClose} title={`Link "${category}" to a business`}>
+      <p style={{ ...S.hint, marginTop: 0 }}>
+        Find the business this category is really sold on behalf of. Once linked, you can send that category's
+        weekly figures straight into their own report.
+      </p>
+      <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+        <input style={{ ...S.input, flex: 1 }} value={q} placeholder="Find a business by name…"
+          onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") search(); }} />
+        <button style={{ ...S.btn, ...S.btnGhost }} disabled={busy || !q.trim()} onClick={search}><Search size={16} /></button>
+      </div>
+      {err && <p style={S.errTxt}>{err}</p>}
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {results.map((b) => (
+          <button key={b.id} style={{ ...S.card, width: "100%", textAlign: "left", cursor: "pointer" }}
+            disabled={busy} onClick={() => pick(b)}>
+            <div style={{ flex: 1 }}><div style={S.cardName}>{b.name}</div></div>
+            {b.id === currentTargetId && <Check size={16} style={{ color: accent }} />}
+          </button>
+        ))}
+      </div>
+      {currentTargetId && (
+        <button style={{ ...S.btn, ...S.btnGhost, width: "100%", marginTop: 12, color: "#FF8B7A" }}
+          disabled={busy} onClick={onRemove}>
+          Remove link
+        </button>
+      )}
+    </Modal>
+  );
+}
+
+function SalarySettingsModal({ businessId, salary, salaryCats = [], cats = [], onSaved, onClose }) {
+  const initialRows = {};
+  cats.forEach((c) => {
+    const existing = salaryCats.find((r) => r.category === c);
+    initialRows[c] = { pct: String(existing?.pct ?? 0), tithe_pct: String(existing?.tithe_pct ?? 10) };
+  });
+  const [rows, setRows] = useState(initialRows);
+  const [outsideSalary, setOutsideSalary] = useState(String(salary.outside_salary ?? 0));
+  const [outsideTithePct, setOutsideTithePct] = useState(String(salary.outside_tithe_pct ?? 10));
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  const setField = (c, field, v) =>
+    setRows((prev) => ({ ...prev, [c]: { ...prev[c], [field]: v.replace(/[^0-9.]/g, "") } }));
+
+  const save = async () => {
+    setBusy(true); setErr("");
+    try {
+      const settingsFields = {
+        outside_salary: Math.max(0, Number(outsideSalary) || 0),
+        outside_tithe_pct: Math.max(0, Number(outsideTithePct) || 0),
+      };
+      const rowsForSave = {};
+      Object.entries(rows).forEach(([c, v]) => { rowsForSave[c] = { pct: Number(v.pct) || 0, tithe_pct: Number(v.tithe_pct) || 0 }; });
+      await Promise.all([
+        saveSalarySettings(businessId, settingsFields),
+        saveSalaryCategoryPcts(businessId, salaryCats, rowsForSave),
+      ]);
+      const newSalaryCats = cats.map((c) => ({ category: c, pct: rowsForSave[c].pct, tithe_pct: rowsForSave[c].tithe_pct }));
+      onSaved({ ...settingsFields }, newSalaryCats);
+    } catch (e) { setErr(e.message); }
+    setBusy(false);
+  };
+
+  return (
+    <Modal onClose={onClose} title="Salary settings">
+      <p style={{ ...S.hint, marginTop: 0 }}>
+        Each company you sell for can have its own salary percentage — not one combined rate on the business's
+        total — plus its own "to God" percentage taken from that salary amount. Separately, add your normal
+        salary from your own job below. Leave any percentage at 0 to skip it.
+      </p>
+      {cats.length > 0 && <SectionTitle>Salary from sales, per company</SectionTitle>}
+      {cats.map((c) => (
+        <div key={c} style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+          <div style={{ ...S.fieldWrap, flex: 1, marginBottom: 0 }}>
+            <span style={S.fieldLabel}>{c} — salary (%)</span>
+            <input style={S.input} value={rows[c]?.pct ?? "0"} inputMode="decimal"
+              onChange={(e) => setField(c, "pct", e.target.value)} placeholder="e.g. 5" />
+          </div>
+          <div style={{ ...S.fieldWrap, flex: 1, marginBottom: 0 }}>
+            <span style={S.fieldLabel}>To God (%)</span>
+            <input style={S.input} value={rows[c]?.tithe_pct ?? "10"} inputMode="decimal"
+              onChange={(e) => setField(c, "tithe_pct", e.target.value)} placeholder="e.g. 10" />
+          </div>
+        </div>
+      ))}
+      {cats.length === 0 && (
+        <p style={S.hint}>No companies/categories set up yet on your products, so there's nothing to pick from here.</p>
+      )}
+      <SectionTitle>Salary from your job</SectionTitle>
+      <div style={S.fieldWrap}>
+        <span style={S.fieldLabel}>Fixed amount</span>
+        <input style={S.input} value={outsideSalary} inputMode="decimal"
+          onChange={(e) => setOutsideSalary(e.target.value.replace(/[^0-9.]/g, ""))} placeholder="e.g. 200" />
+      </div>
+      <div style={S.fieldWrap}>
+        <span style={S.fieldLabel}>To God from that salary (%)</span>
+        <input style={S.input} value={outsideTithePct} inputMode="decimal"
+          onChange={(e) => setOutsideTithePct(e.target.value.replace(/[^0-9.]/g, ""))} placeholder="e.g. 10" />
+      </div>
+      {err && <p style={S.errTxt}>{err}</p>}
+      <button style={{ ...S.btn, ...S.btnDark, width: "100%", marginTop: 6 }} disabled={busy} onClick={save}>
+        {busy ? "Saving…" : "Save"}
+      </button>
+    </Modal>
   );
 }
 
