@@ -239,6 +239,7 @@ function emojiFor(name) {
 // SUBSCRIPTION: pay screen (locked) + owner approval screen
 // ============================================================
 function PayScreen({ user, businessName, onExit, onSubmitted }) {
+  const [method, setMethod] = useState("ecocash"); // "ecocash" | "cash"
   const [ref, setRef] = useState("");
   const [weeks, setWeeks] = useState(1);
   const [busy, setBusy] = useState(false);
@@ -246,13 +247,24 @@ function PayScreen({ user, businessName, onExit, onSubmitted }) {
 
   const openEcocash = () => { window.location.href = `tel:${encodeURIComponent("*151#")}`; };
   const submit = async () => {
-    if (!ref.trim()) { alert("Please enter the EcoCash confirmation reference."); return; }
+    if (!ref.trim()) {
+      alert(method === "ecocash" ? "Please enter the EcoCash confirmation reference." : "Please enter who you gave the cash to (for the record).");
+      return;
+    }
     setBusy(true);
     try {
-      await sb.insert("payments", {
-        business_id: user.business_id, amount: WEEKLY_PRICE * weeks,
-        reference: ref.trim(), weeks, status: "pending",
-      });
+      try {
+        await sb.insert("payments", {
+          business_id: user.business_id, amount: WEEKLY_PRICE * weeks,
+          reference: ref.trim(), weeks, status: "pending", method,
+        });
+      } catch {
+        // `method` column may not exist yet on older deployments
+        await sb.insert("payments", {
+          business_id: user.business_id, amount: WEEKLY_PRICE * weeks,
+          reference: ref.trim(), weeks, status: "pending",
+        });
+      }
       setSent(true); onSubmitted();
     } catch (e) { alert(e.message); }
     setBusy(false);
@@ -277,25 +289,43 @@ function PayScreen({ user, businessName, onExit, onSubmitted }) {
             <div style={{ ...S.cartTotalRow, marginBottom: 12 }}>
               <span>Weekly fee</span><span>${WEEKLY_PRICE.toFixed(2)}</span>
             </div>
-            <div style={{ textAlign: "left", marginBottom: 12 }}>
-              <div style={S.fieldLabel}>How to pay with EcoCash</div>
-              <ol style={{ ...S.hint, paddingLeft: 18, lineHeight: 1.6 }}>
-                <li>Send <b style={{ color: goldLt }}>${(WEEKLY_PRICE * weeks).toFixed(2)}</b> to <b style={{ color: goldLt }}>{ECOCASH_NUMBER}</b></li>
-                <li>Copy the EcoCash confirmation reference (from the SMS)</li>
-                <li>Paste it below and tap Submit</li>
-              </ol>
-            </div>
             <label style={S.fieldWrap}>
               <span style={S.fieldLabel}>Weeks paying for</span>
               <select style={S.inputDark} value={weeks} onChange={(e) => setWeeks(parseInt(e.target.value))}>
                 {[1,2,3,4].map((w) => <option key={w} value={w}>{w} week{w>1?"s":""} — ${(WEEKLY_PRICE*w).toFixed(2)}</option>)}
               </select>
             </label>
-            <button style={{ ...S.btn, ...S.btnGhost, width: "100%", marginBottom: 8 }} onClick={openEcocash}>Open EcoCash (*151#)</button>
-            <label style={S.fieldWrap}>
-              <span style={{ ...S.fieldLabel, color: "rgba(234,243,236,0.8)" }}>EcoCash reference</span>
-              <input style={S.inputDark} value={ref} onChange={(e) => setRef(e.target.value)} placeholder="e.g. MP12345678" />
-            </label>
+            <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+              <button style={{ ...S.btn, flex: 1, ...(method === "ecocash" ? S.btnGold : S.btnGhost) }} onClick={() => setMethod("ecocash")}>EcoCash</button>
+              <button style={{ ...S.btn, flex: 1, ...(method === "cash" ? S.btnGold : S.btnGhost) }} onClick={() => setMethod("cash")}>Cash</button>
+            </div>
+            {method === "ecocash" ? (
+              <>
+                <div style={{ textAlign: "left", marginBottom: 12 }}>
+                  <div style={S.fieldLabel}>How to pay with EcoCash</div>
+                  <ol style={{ ...S.hint, paddingLeft: 18, lineHeight: 1.6 }}>
+                    <li>Send <b style={{ color: goldLt }}>${(WEEKLY_PRICE * weeks).toFixed(2)}</b> to <b style={{ color: goldLt }}>{ECOCASH_NUMBER}</b></li>
+                    <li>Copy the EcoCash confirmation reference (from the SMS)</li>
+                    <li>Paste it below and tap Submit</li>
+                  </ol>
+                </div>
+                <button style={{ ...S.btn, ...S.btnGhost, width: "100%", marginBottom: 8 }} onClick={openEcocash}>Open EcoCash (*151#)</button>
+                <label style={S.fieldWrap}>
+                  <span style={{ ...S.fieldLabel, color: "rgba(234,243,236,0.8)" }}>EcoCash reference</span>
+                  <input style={S.inputDark} value={ref} onChange={(e) => setRef(e.target.value)} placeholder="e.g. MP12345678" />
+                </label>
+              </>
+            ) : (
+              <>
+                <p style={{ ...S.hint, marginTop: 0 }}>
+                  Pay <b style={{ color: goldLt }}>${(WEEKLY_PRICE * weeks).toFixed(2)}</b> cash to whoever collects it for Pamusika, then note who you gave it to below.
+                </p>
+                <label style={S.fieldWrap}>
+                  <span style={{ ...S.fieldLabel, color: "rgba(234,243,236,0.8)" }}>Given to</span>
+                  <input style={S.inputDark} value={ref} onChange={(e) => setRef(e.target.value)} placeholder="e.g. Tapiwa, at the market" />
+                </label>
+              </>
+            )}
             <button style={{ ...S.btn, ...S.btnGold, width: "100%", marginTop: 6 }} disabled={busy || !ref.trim()} onClick={submit}>
               {busy ? "Submitting…" : "Submit payment"}
             </button>
@@ -429,6 +459,130 @@ function OwnerScreen({ user, businesses, onExit, onChange }) {
         </div>
       </div>
     </div>
+  );
+}
+
+// Same approvals OwnerScreen has (new businesses, subscription payments),
+// but embedded as a normal tab inside one specific business's own account
+// (Munonwa/Pamusika) instead of a separate standalone "owner" login —
+// whoever has is_platform_owner on their member row sees this tab. An
+// approved payment credits this business's own revenue under a "Pamusika"
+// category (same mechanism as B2B reseller reports), and a receipt is sent
+// as a direct message straight to the paying business.
+function ApprovalsTab({ businessId, businessName }) {
+  const [payments, setPayments] = useState([]);
+  const [pendingBiz, setPendingBiz] = useState([]);
+  const [names, setNames] = useState({});
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      const [pays, biz] = await Promise.all([
+        sb.select("payments", "status=eq.pending&order=created_at.desc&limit=200"),
+        sb.select("businesses", "select=id,name,approved&order=id.asc").catch(() => []),
+      ]);
+      setPayments(pays);
+      setPendingBiz((biz || []).filter((b) => b.approved === false));
+      const ids = [...new Set(pays.map((p) => p.business_id))];
+      if (ids.length) {
+        const bizzes = await sb.select("businesses", `id=in.(${ids.join(",")})&select=id,name`);
+        const map = {}; bizzes.forEach((b) => { map[b.id] = b.name; });
+        setNames(map);
+      }
+    } catch {}
+    setLoading(false);
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const approve = async (p) => {
+    setBusy(true);
+    try {
+      await sb.rpc("approve_payment", { p_id: p.id });
+      const payerName = names[p.business_id] || `Business ${p.business_id}`;
+
+      await ensureCategoryExists(businessId, "Pamusika");
+      const weekStartDay = await fetchReportWeekStartDay(businessId);
+      const { startStr, endStr } = currentWeekRange(weekStartDay);
+      await creditPaymentRevenue({
+        receivingBusinessId: businessId, fromBusinessId: p.business_id, fromBusinessName: payerName,
+        weekStart: startStr, weekEnd: endStr, amount: Number(p.amount),
+      });
+
+      const receipt = [
+        `Receipt from ${businessName}`,
+        `Payment approved: ${money(p.amount)}`,
+        `${p.weeks} week${p.weeks > 1 ? "s" : ""} · ${p.method === "cash" ? "Cash" : "EcoCash"}${p.reference ? ` (${p.reference})` : ""}`,
+        `Approved ${new Date().toLocaleString()}`,
+      ].join("\n");
+      try { await sendOrderRequestMessage(businessId, p.business_id, businessId, receipt); } catch {}
+
+      await load();
+    } catch (e) { alert(e.message); }
+    setBusy(false);
+  };
+  const reject = async (id) => {
+    setBusy(true);
+    try { await sb.patch("payments", `id=eq.${id}`, { status: "rejected" }); await load(); }
+    catch (e) { alert(e.message); }
+    setBusy(false);
+  };
+  const approveBiz = async (id) => {
+    setBusy(true);
+    try { await sb.patch("businesses", `id=eq.${id}`, { approved: true }); await load(); }
+    catch (e) { alert(e.message); }
+    setBusy(false);
+  };
+  const rejectBiz = async (id) => {
+    if (!window.confirm("Permanently remove this business and its account? This can't be undone.")) return;
+    setBusy(true);
+    try {
+      await sb.del("members", `business_id=eq.${id}`);
+      await sb.del("businesses", `id=eq.${id}`);
+      await load();
+    } catch (e) { alert(e.message); }
+    setBusy(false);
+  };
+
+  if (loading) return <Loading />;
+
+  return (
+    <>
+      <SectionTitle>Pending businesses</SectionTitle>
+      <p style={S.hint}>New self-registered businesses waiting to be let in — approve them, or reject to remove a throwaway account.</p>
+      {pendingBiz.length === 0 && <p style={S.empty}>Nothing waiting.</p>}
+      <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 20 }}>
+        {pendingBiz.map((b) => (
+          <div key={b.id} style={{ ...S.card, flexDirection: "column", alignItems: "stretch", gap: 8 }}>
+            <div style={{ flex: 1 }}><div style={S.cardName}>{b.name}</div></div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button style={{ ...S.btn, ...S.btnDark, flex: 1 }} disabled={busy} onClick={() => approveBiz(b.id)}><Check size={16} /> Approve</button>
+              <button style={{ ...S.btn, ...S.btnGhost, flex: 1, color: "#FF8B7A" }} disabled={busy} onClick={() => rejectBiz(b.id)}>Reject</button>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <SectionTitle>Pending payments</SectionTitle>
+      <p style={S.hint}>Approving credits the amount to {businessName}'s own revenue under a "Pamusika" category, and sends the business a receipt.</p>
+      {payments.length === 0 && <p style={S.empty}>No payments waiting for approval.</p>}
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {payments.map((p) => (
+          <div key={p.id} style={{ ...S.card, flexDirection: "column", alignItems: "stretch", gap: 8 }}>
+            <div style={{ flex: 1 }}>
+              <div style={S.cardName}>{names[p.business_id] || `Business ${p.business_id}`} · {money(p.amount)}</div>
+              <div style={S.cardMeta}>
+                {p.method === "cash" ? "Cash" : "EcoCash"}{p.reference ? ` · ${p.reference}` : ""} · {p.weeks} week{p.weeks > 1 ? "s" : ""} · {new Date(p.created_at).toLocaleString()}
+              </div>
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button style={{ ...S.btn, ...S.btnDark, flex: 1 }} disabled={busy} onClick={() => approve(p)}><Check size={16} /> Approve</button>
+              <button style={{ ...S.btn, ...S.btnGhost, flex: 1, color: "#FF8B7A" }} disabled={busy} onClick={() => reject(p.id)}>Reject</button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </>
   );
 }
 
@@ -810,8 +964,27 @@ export function Admin({ user, onExit, businessName, onSell }) {
   const [cats, setCats] = useState([]);   // this business's category names
   const [hasIncomingOrders, setHasIncomingOrders] = useState(false);
   const [reportWeekday, setReportWeekday] = useState(2); // 0=Sun..6=Sat, default Tuesday
+  const [isPlatformOwner, setIsPlatformOwner] = useState(false);
+  const [unreadMessages, setUnreadMessages] = useState(0);
 
   useEffect(() => { fetchReportWeekStartDay(user.business_id).then(setReportWeekday); }, [user.business_id]);
+  useEffect(() => {
+    let cancelled = false;
+    const check = () => fetchUnreadMessageCount(user.business_id).then((n) => { if (!cancelled) setUnreadMessages(n); });
+    check();
+    const t = setInterval(check, 20000); // floating badge — no need for tighter than this
+    return () => { cancelled = true; clearInterval(t); };
+  }, [user.business_id]);
+  const openMessages = () => {
+    setTab("community");
+    markMessagesRead(user.business_id).catch(() => {});
+    setUnreadMessages(0);
+  };
+  useEffect(() => {
+    sb.select("members", `id=eq.${user.id}&select=is_platform_owner`)
+      .then((rows) => setIsPlatformOwner(!!(rows[0] && rows[0].is_platform_owner)))
+      .catch(() => setIsPlatformOwner(false)); // column may not exist yet on older deployments
+  }, [user.id]);
   const reportTabLabel = reportWeekday === 2 ? "Tuesday report" : "Weekly report";
 
   const loadCats = useCallback(async () => {
@@ -882,6 +1055,13 @@ export function Admin({ user, onExit, businessName, onSell }) {
   );
 
   return (
+    <>
+    {unreadMessages > 0 && tab !== "community" && (
+      <button onClick={openMessages} style={S.floatingMsgBtn} title="New messages">
+        <Send size={20} />
+        <span style={S.floatingMsgBadge}>{unreadMessages > 9 ? "9+" : unreadMessages}</span>
+      </button>
+    )}
     <AppShell
       title={businessName} subtitle={`${user.name} · Admin`} icon={<PamusikaMark size={20} />}
       tab={tab} setTab={setTab}
@@ -890,6 +1070,7 @@ export function Admin({ user, onExit, businessName, onSell }) {
         ...(hasIncomingOrders ? [["supplierOrders","Orders"]] : []),
         ["community","Community"],
         ["customers","Customers"],["compare","Compare"],["cashups","Cash-ups"],["report",reportTabLabel],["team","Team"],
+        ...(isPlatformOwner ? [["approvals","Approvals"]] : []),
       ]}
       onExit={onExit} onRefresh={refresh}
       decoration={<LightWatermark />}
@@ -923,8 +1104,10 @@ export function Admin({ user, onExit, businessName, onSell }) {
         {tab === "report" && <Report sales={sales} products={products} low={[...out, ...low]} cats={cats} businessId={user.business_id} businessName={businessName}
           weekStartDay={reportWeekday} onWeekStartDayChange={setReportWeekday} />}
         {tab === "team" && <TeamManager onChange={refresh} businessId={user.business_id} sales={sales} user={user} />}
+        {tab === "approvals" && <ApprovalsTab businessId={user.business_id} businessName={businessName} />}
       </>}
     </AppShell>
+    </>
   );
 }
 
@@ -1860,8 +2043,15 @@ function ManageCategories({ businessId, cats = [], onClose, onChange }) {
   };
   const remove = async (c) => {
     setBusy(true);
-    try { await sb.del("categories", `business_id=eq.${businessId}&name=eq.${encodeURIComponent(c)}`); await onChange(); }
-    catch (e) { alert(e.message); }
+    const enc = encodeURIComponent(c);
+    try {
+      await sb.del("categories", `business_id=eq.${businessId}&name=eq.${enc}`);
+      // Clean up anything set up for this category elsewhere (salary %,
+      // a link to another business) so nothing dangling is left behind.
+      await sb.del("business_salary_categories", `business_id=eq.${businessId}&category=eq.${enc}`).catch(() => {});
+      await sb.del("category_business_links", `business_id=eq.${businessId}&category=eq.${enc}`).catch(() => {});
+      await onChange();
+    } catch (e) { alert(e.message); }
     setBusy(false);
   };
   return (
@@ -3026,6 +3216,45 @@ async function saveReportWeekStartDay(businessId, day) {
   return sb.insert("business_report_settings", { business_id: businessId, ...row });
 }
 
+// This week's [start, end] date strings for a given week-start-day, same
+// Tuesday-cycle math the Report tab uses, just for the CURRENT week only
+// (no offset/custom-range) — used to file platform revenue under the
+// right week regardless of what day Munonwa's own report happens to start on.
+function currentWeekRange(weekStartDay) {
+  const now = new Date();
+  const daysSinceStart = (now.getDay() - weekStartDay + 7) % 7;
+  const start = new Date(now); start.setHours(0, 0, 0, 0);
+  start.setDate(now.getDate() - daysSinceStart);
+  const end = new Date(start); end.setDate(start.getDate() + 6);
+  return { startStr: localDateStr(start), endStr: localDateStr(end) };
+}
+
+// Credits one approved payment to the platform-owner business's own
+// revenue, under the "Pamusika" category — reuses the same
+// received_reseller_reports table the B2B reseller-report feature uses,
+// but ADDS to any existing figure for the week instead of replacing it,
+// since several different businesses' payments can land in the same week.
+async function creditPaymentRevenue({ receivingBusinessId, fromBusinessId, fromBusinessName, weekStart, weekEnd, amount }) {
+  const category = "Pamusika";
+  const enc = encodeURIComponent(category);
+  const existing = await sb.select("received_reseller_reports",
+    `receiving_business_id=eq.${receivingBusinessId}&from_business_id=eq.${fromBusinessId}&category=eq.${enc}&week_start=eq.${weekStart}`
+  ).catch(() => []);
+  if (existing.length) {
+    const newTotal = Number(existing[0].total_sales) + amount;
+    return sb.patch("received_reseller_reports", `id=eq.${existing[0].id}`, { total_sales: newTotal, from_business_name: fromBusinessName, week_end: weekEnd });
+  }
+  return sb.insert("received_reseller_reports", {
+    receiving_business_id: receivingBusinessId, from_business_id: fromBusinessId, from_business_name: fromBusinessName,
+    category, week_start: weekStart, week_end: weekEnd, total_sales: amount, total_tithe: 0,
+  });
+}
+// Makes sure a category exists so it's ready to pick a salary % for —
+// silently ignored if it's already there.
+async function ensureCategoryExists(businessId, name) {
+  try { await sb.insert("categories", { business_id: businessId, name }); } catch {}
+}
+
 // A product's own supplier if it has one, else the business's default link
 // (already-loaded `business_supplier_links` row) — a product with no
 // override just inherits whatever the business has set as default, same as
@@ -3364,6 +3593,34 @@ function legacyOrderText(o) {
   return (o.items || []).map((it) => `- ${it.qty} ${it.unit || "unit(s)"} of ${it.product_name}`).join("\n");
 }
 
+// Powers the floating "new messages" button, visible from any tab — counts
+// anything from someone else (the open room, or a direct/agent message)
+// newer than this business's own last-checked time.
+async function fetchLastMessagesRead(businessId) {
+  try {
+    const rows = await sb.select("business_message_reads", `business_id=eq.${businessId}`);
+    return rows[0] ? rows[0].last_read_at : new Date(0).toISOString();
+  } catch { return new Date(0).toISOString(); } // table may not exist yet on older deployments
+}
+async function markMessagesRead(businessId) {
+  const now = new Date().toISOString();
+  const existing = await sb.select("business_message_reads", `business_id=eq.${businessId}`).catch(() => []);
+  if (existing.length) return sb.patch("business_message_reads", `business_id=eq.${businessId}`, { last_read_at: now });
+  return sb.insert("business_message_reads", { business_id: businessId, last_read_at: now });
+}
+async function fetchUnreadMessageCount(businessId) {
+  try {
+    const since = await fetchLastMessagesRead(businessId);
+    const enc = encodeURIComponent(since);
+    const [room, dm] = await Promise.all([
+      sb.select("community_chat_messages", `business_id=neq.${businessId}&created_at=gt.${enc}&select=id`),
+      sb.select("order_request_messages",
+        `or=(requester_business_id.eq.${businessId},supplier_business_id.eq.${businessId})&sender_business_id=neq.${businessId}&created_at=gt.${enc}&select=id`),
+    ]);
+    return room.length + dm.length;
+  } catch { return 0; } // table(s) may not exist yet on older deployments
+}
+
 // Every free-text message between two businesses, oldest first — independent
 // of whether any order exists yet between them, and independent of which one
 // got stored as "requester" vs "supplier" (a plain business-to-business DM,
@@ -3380,11 +3637,14 @@ async function fetchThreadMessages(businessIdA, businessIdB) {
   } catch { return []; }
 }
 // orderRequestId is optional context (tags the message to a specific order)
-// — a message can be sent any time, order or no order.
-function sendOrderRequestMessage(requesterBusinessId, supplierBusinessId, senderBusinessId, body, orderRequestId) {
+// — a message can be sent any time, order or no order. replyToId, when set,
+// quotes one earlier message instead of just appending to the end of a
+// thread that may have many messages in it.
+function sendOrderRequestMessage(requesterBusinessId, supplierBusinessId, senderBusinessId, body, orderRequestId, replyToId) {
   return sb.rpc("send_order_request_message", {
     p_requester_business_id: requesterBusinessId, p_supplier_business_id: supplierBusinessId,
     p_sender_business_id: senderBusinessId, p_body: body, p_order_request_id: orderRequestId || null,
+    p_reply_to_id: replyToId || null,
   });
 }
 
@@ -3413,8 +3673,10 @@ function buildThreadTimeline(thread, messages, viewerBusinessId) {
 // chat that already existed here rather than a new visual language.
 // `onFulfill`/`onReject` (supplier-only) render inline under a pending order
 // that isn't "mine" — i.e. one this viewer received, not sent.
-function ChatThread({ thread, messages = [], viewerBusinessId, onFulfill, onReject, busy }) {
+function ChatThread({ thread, messages = [], viewerBusinessId, onFulfill, onReject, busy, onReply }) {
   const events = buildThreadTimeline(thread, messages, viewerBusinessId);
+  const messagesById = {};
+  messages.forEach((m) => { messagesById[m.id] = m; });
   if (events.length === 0) return <p style={S.empty}>No messages yet — say hello, or send an order below.</p>;
   return (
     <div style={S.chatThread}>
@@ -3445,10 +3707,19 @@ function ChatThread({ thread, messages = [], viewerBusinessId, onFulfill, onReje
             </div>
           );
         }
+        const parent = ev.m.reply_to_id ? messagesById[ev.m.reply_to_id] : null;
         return (
           <div key={`m-${ev.m.id}`} style={ev.mine ? S.chatBubbleOut : S.chatBubbleSystem}>
+            {parent && (
+              <div style={S.chatQuote}>
+                {(parent.sender_business_id === viewerBusinessId ? "You" : "Them")}: {parent.body.length > 60 ? parent.body.slice(0, 60) + "…" : parent.body}
+              </div>
+            )}
             {ev.m.body}
-            <div style={S.chatMeta}>{new Date(ev.m.created_at).toLocaleString()}</div>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+              <div style={S.chatMeta}>{new Date(ev.m.created_at).toLocaleString()}</div>
+              {onReply && <button style={S.chatReplyLink} onClick={() => onReply(ev.m)}>Reply</button>}
+            </div>
           </div>
         );
       })}
@@ -3458,7 +3729,7 @@ function ChatThread({ thread, messages = [], viewerBusinessId, onFulfill, onReje
 
 // Plain text + send button, reusing the app's ordinary input/button chrome
 // rather than inventing new form styling.
-function MessageComposer({ onSend, disabled, disabledHint }) {
+function MessageComposer({ onSend, disabled, disabledHint, replyingTo, onCancelReply }) {
   const [body, setBody] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -3466,19 +3737,33 @@ function MessageComposer({ onSend, disabled, disabledHint }) {
     const trimmed = body.trim();
     if (!trimmed || busy) return;
     setBusy(true);
-    try { await onSend(trimmed); setBody(""); }
-    catch (e) { alert(e.message); }
+    try {
+      await onSend(trimmed, replyingTo ? replyingTo.id : null);
+      setBody("");
+      if (onCancelReply) onCancelReply();
+    } catch (e) { alert(e.message); }
     setBusy(false);
   };
 
   if (disabled) return disabledHint ? <p style={{ ...S.hint, marginTop: 0 }}>{disabledHint}</p> : null;
   return (
-    <div style={{ display: "flex", gap: 8 }}>
-      <input style={{ ...S.input, flex: 1 }} value={body} placeholder="Type a message…" autoComplete="off"
-        onChange={(e) => setBody(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") send(); }} />
-      <button style={{ ...S.btn, ...S.btnGhost, padding: "11px 14px" }} disabled={busy || !body.trim()} onClick={send}>
-        <Send size={16} />
-      </button>
+    <div>
+      {replyingTo && (
+        <div style={S.chatReplyPreview}>
+          <div style={{ flex: 1, overflow: "hidden" }}>
+            <div style={{ fontSize: 10.5, fontWeight: 800, opacity: 0.7 }}>Replying to</div>
+            <div style={{ fontSize: 12.5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{replyingTo.body}</div>
+          </div>
+          <button style={S.delBtn} onClick={onCancelReply}><X size={14} /></button>
+        </div>
+      )}
+      <div style={{ display: "flex", gap: 8 }}>
+        <input style={{ ...S.input, flex: 1 }} value={body} placeholder="Type a message…" autoComplete="off"
+          onChange={(e) => setBody(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") send(); }} />
+        <button style={{ ...S.btn, ...S.btnGhost, padding: "11px 14px" }} disabled={busy || !body.trim()} onClick={send}>
+          <Send size={16} />
+        </button>
+      </div>
     </div>
   );
 }
@@ -3491,15 +3776,20 @@ function MessageComposer({ onSend, disabled, disabledHint }) {
 // the on-screen keyboard instead of hiding behind it. Used by every chat
 // surface (agent threads, direct messages) so they all behave the same way.
 function ChatPanel({ height, thread = [], messages, viewerBusinessId, onFulfill, onReject, busy, onSend, extra }) {
+  const [replyingTo, setReplyingTo] = useState(null);
+  const sendWithReply = async (body, replyToId) => {
+    await onSend(body, replyToId);
+    setReplyingTo(null);
+  };
   return (
     <div style={{ ...S.chatPanel, height }}>
       <div style={S.chatPanelScroll}>
         <ChatThread thread={thread} messages={messages} viewerBusinessId={viewerBusinessId}
-          onFulfill={onFulfill} onReject={onReject} busy={busy} />
+          onFulfill={onFulfill} onReject={onReject} busy={busy} onReply={setReplyingTo} />
       </div>
       {extra}
       <div style={S.chatComposerBar}>
-        <MessageComposer onSend={onSend} />
+        <MessageComposer onSend={sendWithReply} replyingTo={replyingTo} onCancelReply={() => setReplyingTo(null)} />
       </div>
     </div>
   );
@@ -3545,8 +3835,8 @@ function SupplierThreadModal({ businessId, businessName, link, supplierName, ite
   };
 
   const latestOrderId = thread.length ? thread[thread.length - 1].id : null;
-  const sendMessage = async (body) => {
-    await sendOrderRequestMessage(businessId, supplierBusinessId, businessId, body, latestOrderId);
+  const sendMessage = async (body, replyToId) => {
+    await sendOrderRequestMessage(businessId, supplierBusinessId, businessId, body, latestOrderId, replyToId);
     await loadThread();
   };
 
@@ -3668,8 +3958,8 @@ function DirectMessageModal({ businessId, otherId, otherName, onClose }) {
   }, [businessId, otherId]);
   useEffect(() => { load(); }, [load]);
 
-  const sendMessage = async (body) => {
-    await sendOrderRequestMessage(businessId, otherId, businessId, body);
+  const sendMessage = async (body, replyToId) => {
+    await sendOrderRequestMessage(businessId, otherId, businessId, body, null, replyToId);
     await load();
   };
 
@@ -3728,6 +4018,7 @@ function CommunityChat({ businessId, businessName }) {
   const [busy, setBusy] = useState(false);
   const [dmPartners, setDmPartners] = useState([]); // [{id, name}]
   const [dmTarget, setDmTarget] = useState(null);   // {id, name} or null
+  const [replyingTo, setReplyingTo] = useState(null); // message being replied to, or null
 
   const load = useCallback(async () => {
     try {
@@ -3764,12 +4055,18 @@ function CommunityChat({ businessId, businessName }) {
     if (!trimmed || busy) return;
     setBusy(true);
     try {
-      await sb.rpc("send_community_message", { p_business_id: businessId, p_sender_name: businessName, p_body: trimmed });
+      await sb.rpc("send_community_message", {
+        p_business_id: businessId, p_sender_name: businessName, p_body: trimmed,
+        p_reply_to_id: replyingTo ? replyingTo.id : null,
+      });
       setBody("");
+      setReplyingTo(null);
       await load();
     } catch (e) { alert(e.message); }
     setBusy(false);
   };
+  const messagesById = {};
+  messages.forEach((m) => { messagesById[m.id] = m; });
 
   return (
     <>
@@ -3810,6 +4107,7 @@ function CommunityChat({ businessId, businessName }) {
               <div style={S.chatThread}>
                 {messages.map((m) => {
                   const mine = m.business_id === businessId;
+                  const parent = m.reply_to_id ? messagesById[m.reply_to_id] : null;
                   return (
                     <div key={m.id} style={mine ? S.chatBubbleOut : S.chatBubbleSystem}>
                       {!mine && (
@@ -3819,8 +4117,16 @@ function CommunityChat({ businessId, businessName }) {
                           {m.sender_name}
                         </button>
                       )}
+                      {parent && (
+                        <div style={S.chatQuote}>
+                          {parent.sender_name}: {parent.body.length > 60 ? parent.body.slice(0, 60) + "…" : parent.body}
+                        </div>
+                      )}
                       {m.body}
-                      <div style={S.chatMeta}>{new Date(m.created_at).toLocaleString()}</div>
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+                        <div style={S.chatMeta}>{new Date(m.created_at).toLocaleString()}</div>
+                        <button style={S.chatReplyLink} onClick={() => setReplyingTo(m)}>Reply</button>
+                      </div>
                     </div>
                   );
                 })}
@@ -3828,6 +4134,15 @@ function CommunityChat({ businessId, businessName }) {
             </div>
           )}
           <div style={S.chatComposerBar}>
+            {replyingTo && (
+              <div style={S.chatReplyPreview}>
+                <div style={{ flex: 1, overflow: "hidden" }}>
+                  <div style={{ fontSize: 10.5, fontWeight: 800, opacity: 0.7 }}>Replying to {replyingTo.sender_name}</div>
+                  <div style={{ fontSize: 12.5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{replyingTo.body}</div>
+                </div>
+                <button style={S.delBtn} onClick={() => setReplyingTo(null)}><X size={14} /></button>
+              </div>
+            )}
             <div style={{ display: "flex", gap: 8 }}>
               <input style={{ ...S.input, flex: 1 }} value={body} placeholder="Type a message…" autoComplete="off"
                 onChange={(e) => setBody(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") send(); }} />
@@ -4014,8 +4329,8 @@ function SupplierOrderThreadModal({ businessId, requesterId, requesterName, onCl
   };
 
   const latestOrderId = thread.length ? thread[thread.length - 1].id : null;
-  const sendMessage = async (body) => {
-    await sendOrderRequestMessage(requesterId, businessId, businessId, body, latestOrderId);
+  const sendMessage = async (body, replyToId) => {
+    await sendOrderRequestMessage(requesterId, businessId, businessId, body, latestOrderId, replyToId);
     await load();
   };
 
@@ -4750,6 +5065,17 @@ function SalarySettingsModal({ businessId, salary, salaryCats = [], cats = [], o
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
 
+  // Keep a default row ready for any category that shows up in `cats`
+  // after this modal first opened (added from Stock → Manage categories).
+  useEffect(() => {
+    setRows((prev) => {
+      const next = { ...prev };
+      let changed = false;
+      cats.forEach((c) => { if (!next[c]) { next[c] = { pct: "0", tithe_pct: "10" }; changed = true; } });
+      return changed ? next : prev;
+    });
+  }, [cats]);
+
   const setField = (c, field, v) =>
     setRows((prev) => ({ ...prev, [c]: { ...prev[c], [field]: v.replace(/[^0-9.]/g, "") } }));
 
@@ -4766,7 +5092,10 @@ function SalarySettingsModal({ businessId, salary, salaryCats = [], cats = [], o
         saveSalarySettings(businessId, settingsFields),
         saveSalaryCategoryPcts(businessId, salaryCats, rowsForSave),
       ]);
-      const newSalaryCats = cats.map((c) => ({ category: c, pct: rowsForSave[c].pct, tithe_pct: rowsForSave[c].tithe_pct }));
+      const newSalaryCats = cats.map((c) => {
+        const r = rowsForSave[c] || { pct: 0, tithe_pct: 0 };
+        return { category: c, pct: r.pct, tithe_pct: r.tithe_pct };
+      });
       onSaved({ ...settingsFields }, newSalaryCats);
     } catch (e) { setErr(e.message); }
     setBusy(false);
@@ -5427,6 +5756,14 @@ export const S = {
   chatBubbleSystem: { alignSelf: "flex-start", maxWidth: "88%", background: "rgba(255,255,255,0.06)", border: `1px solid ${line}`, color: ink, borderRadius: "14px 14px 14px 4px", padding: "9px 13px", fontSize: 13, fontWeight: 700 },
   chatBubbleSystemBad: { background: "rgba(192,57,43,0.16)", border: "1px solid rgba(192,57,43,0.35)", color: "#FF8B7A" },
   chatMeta: { fontSize: 10.5, opacity: 0.75, marginTop: 4, fontWeight: 500 },
+  // Quoted parent message shown inside a reply's own bubble
+  chatQuote: { borderLeft: "2px solid rgba(255,255,255,0.4)", paddingLeft: 8, marginBottom: 6, fontSize: 11.5, opacity: 0.85, fontStyle: "italic", fontWeight: 500 },
+  chatReplyLink: { background: "none", border: "none", padding: 0, fontSize: 10.5, fontWeight: 700, opacity: 0.75, cursor: "pointer", color: "inherit", textDecoration: "underline", flexShrink: 0 },
+  // The "replying to…" preview bar shown above the composer input while a reply is queued up
+  chatReplyPreview: { display: "flex", alignItems: "center", gap: 8, background: "rgba(255,255,255,0.06)", border: `1px solid ${line}`, borderRadius: 10, padding: "6px 10px", marginBottom: 8 },
+  // Floating "new messages" button, visible over any tab except Community itself
+  floatingMsgBtn: { position: "fixed", right: 20, bottom: 20, zIndex: 40, width: 54, height: 54, borderRadius: "50%", border: "none", cursor: "pointer", display: "grid", placeItems: "center", background: `linear-gradient(135deg,${accent},${lime})`, color: "#fff", boxShadow: "0 10px 28px rgba(31,157,85,0.45)" },
+  floatingMsgBadge: { position: "absolute", top: -4, right: -4, minWidth: 20, height: 20, padding: "0 5px", borderRadius: 10, background: "#C0392B", color: "#fff", fontSize: 11, fontWeight: 800, display: "grid", placeItems: "center", border: "2px solid #07160f" },
 };
 
 if (typeof document !== "undefined" && !document.getElementById("sf-spin")) {
