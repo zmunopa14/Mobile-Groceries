@@ -4658,14 +4658,17 @@ function Report({ sales, products, low, cats = [], businessId, businessName, wee
     catRows[c].sales += Number(s.total);
     catRows[c].tithe += titheOf(s);
   });
-  // Reports sent in by resellers land here as their own distinguishable
-  // row (tagged with who it's from), but still counted into the one
-  // combined total below — never mixed into a real category's own numbers.
+  // Reports sent in by resellers count under their OWN category (e.g.
+  // "Pamusika" for approved payments) — not a per-sender label — so a
+  // salary % set on that category actually finds this revenue. Several
+  // received reports in the same category (e.g. many businesses' payments,
+  // all tagged "Pamusika") combine into one row here; who each part came
+  // from is still shown separately in "Received from resellers" below.
   receivedReports.forEach((r) => {
-    const label = `Received: ${r.from_business_name}`;
-    catRows[label] = catRows[label] || { sales: 0, tithe: 0 };
-    catRows[label].sales += Number(r.total_sales);
-    catRows[label].tithe += Number(r.total_tithe);
+    const c = r.category;
+    catRows[c] = catRows[c] || { sales: 0, tithe: 0 };
+    catRows[c].sales += Number(r.total_sales);
+    catRows[c].tithe += Number(r.total_tithe);
   });
   const weekTotalSales = Object.values(catRows).reduce((a, c) => a + c.sales, 0);
   const weekTotalTithe = Object.values(catRows).reduce((a, c) => a + c.tithe, 0);
