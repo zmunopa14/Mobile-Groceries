@@ -1102,7 +1102,7 @@ export function Admin({ user, onExit, businessName, onSell }) {
           <SalesList sales={todaySales.slice(0,30)} showSeller onDelete={deleteSale} showTithe />
         </>}
         {tab === "stock" && <StockManager products={products} onChange={refresh} businessId={user.business_id} cats={cats} onCatsChange={loadCats} />}
-        {tab === "transactions" && <Transactions sales={sales} products={products} businessId={user.business_id} onChange={refresh} onDeleteSale={deleteSale} cats={cats} />}
+        {tab === "transactions" && <Transactions sales={sales} products={products} businessId={user.business_id} onChange={refresh} onDeleteSale={deleteSale} cats={cats} user={user} />}
         {tab === "order" && <OrderList products={products} sales={sales} businessName={businessName} businessId={user.business_id} />}
         {tab === "supplierOrders" && <OrdersInbox businessId={user.business_id} />}
         {tab === "community" && <CommunityChat businessId={user.business_id} businessName={businessName} />}
@@ -2595,7 +2595,7 @@ function SellerCompare({ sales }) {
   );
 }
 
-function Transactions({ sales, products, businessId, onChange, onDeleteSale, cats = [] }) {
+function Transactions({ sales, products, businessId, onChange, onDeleteSale, cats = [], user }) {
   const [prodQ, setProdQ] = useState("");
   const [fromQ, setFromQ] = useState("");
   const [toQ, setToQ] = useState("");
@@ -2603,6 +2603,7 @@ function Transactions({ sales, products, businessId, onChange, onDeleteSale, cat
   const [editing, setEditing] = useState(null);
   const [viewing, setViewing] = useState(null);
   const [confirmDel, setConfirmDel] = useState(null);
+  const [catchingUp, setCatchingUp] = useState(false);
 
   // ---- Sales analysis (drill-down) ----
   const [anaDay, setAnaDay] = useState(localDateStr(new Date()));
@@ -2684,6 +2685,9 @@ function Transactions({ sales, products, businessId, onChange, onDeleteSale, cat
         <input style={S.input} type="date" value={anaDay} max={localDateStr(new Date())}
           onChange={(e) => { setAnaDay(e.target.value); setDrillCat(null); setDrillSeller(null); }} />
       </label>
+      <button style={{ ...S.btn, ...S.btnGhost, width: "100%", marginBottom: 10 }} onClick={() => setCatchingUp(true)}>
+        <Plus size={16} /> Add missing sales for this day
+      </button>
 
       {/* Breadcrumb */}
       <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", marginBottom: 10, fontSize: 13 }}>
@@ -2876,7 +2880,75 @@ function Transactions({ sales, products, businessId, onChange, onDeleteSale, cat
           </button>
         </Modal>
       )}
+
+      {catchingUp && (
+        <CatchUpSaleModal businessId={businessId} day={anaDay} recordedTotal={dayTotal}
+          defaultSeller={user && user.name}
+          onClose={() => setCatchingUp(false)}
+          onAdded={async () => { setCatchingUp(false); await onChange(); }} />
+      )}
     </>
+  );
+}
+
+// A seller who only knows the TOTAL they actually made (worked out by
+// hand) but forgot to log some items can enter that true total here —
+// only the shortfall gets recorded, as one entry not tied to any specific
+// product, rather than forcing them to itemize sales they don't remember.
+function CatchUpSaleModal({ businessId, day, recordedTotal, defaultSeller, onClose, onAdded }) {
+  const [actualTotal, setActualTotal] = useState("");
+  const [tithePct, setTithePct] = useState("");
+  const [seller, setSeller] = useState(defaultSeller || "");
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  const actualNum = parseFloat(actualTotal);
+  const hasActual = actualTotal !== "" && !isNaN(actualNum);
+  const shortfall = hasActual ? Math.max(0, actualNum - recordedTotal) : 0;
+
+  const submit = async () => {
+    setErr("");
+    if (!hasActual) { setErr("Enter the actual total you calculated."); return; }
+    if (shortfall <= 0) { setErr("The actual total isn't higher than what's already recorded — nothing to add."); return; }
+    if (!seller.trim()) { setErr("Enter who this sale is being recorded for."); return; }
+    setBusy(true);
+    try {
+      await sb.rpc("record_catchup_sale", {
+        p_business_id: businessId, p_seller: seller.trim(), p_amount: shortfall,
+        p_tithe_pct: parseFloat(tithePct) || 0, p_note: note.trim() || null,
+        p_sold_at: `${day}T${new Date().toTimeString().slice(0, 8)}`,
+      });
+      await onAdded();
+    } catch (e) { setErr(e.message); }
+    setBusy(false);
+  };
+
+  return (
+    <Modal onClose={onClose} title="Add missing sales">
+      <p style={{ ...S.hint, marginTop: 0 }}>
+        For when you know the real total you made that day but didn't log every item — enter the true total below
+        and only the difference gets added, as one entry (it won't affect stock).
+      </p>
+      <div style={S.cartTotalRow}>
+        <span>Already recorded for {new Date(day + "T00:00:00").toLocaleDateString()}</span>
+        <span>{money(recordedTotal)}</span>
+      </div>
+      <Field label="Actual total you calculated ($)" value={actualTotal} onChange={setActualTotal} type="number" placeholder="0.00" />
+      {hasActual && (
+        <div style={{ ...S.cartTotalRow, background: shortfall > 0 ? "rgba(245,166,35,0.15)" : "rgba(43,208,122,0.15)", color: shortfall > 0 ? mango : accent }}>
+          <span>{shortfall > 0 ? "Will add" : "Matches — nothing to add"}</span>
+          <span>{money(shortfall)}</span>
+        </div>
+      )}
+      <Field label="Seller name" value={seller} onChange={setSeller} placeholder="e.g. P Maisiri" />
+      <Field label="To God (%) on this amount" value={tithePct} onChange={setTithePct} type="number" placeholder="0" />
+      <Field label="Note (optional)" value={note} onChange={setNote} placeholder="e.g. forgot to log a few sales" />
+      {err && <p style={S.errTxt}>{err}</p>}
+      <button style={{ ...S.btn, ...S.btnDark, width: "100%", marginTop: 6 }} disabled={busy || shortfall <= 0} onClick={submit}>
+        <Check size={17} /> {busy ? "Adding…" : `Add ${money(shortfall)}`}
+      </button>
+    </Modal>
   );
 }
 
@@ -4628,8 +4700,11 @@ function Report({ sales, products, low, cats = [], businessId, businessName, wee
 
   const catOf = {}, pctOf = {};
   (products || []).forEach((p) => { catOf[p.name] = p.category || "Uncategorised"; pctOf[p.name] = Number(p.tithe_pct) || 0; });
-  // Live "to God" for a sale row, using the product's CURRENT percentage
-  const titheOf = (s) => Number(s.total) * (pctOf[s.product_name] || 0) / 100;
+  // Live "to God" for a sale row, using the product's CURRENT percentage —
+  // except a catch-up entry (no product_id, so it can never match a real
+  // product here) always uses whatever tithe was actually stamped on it at
+  // the time, since there's no live product rate to look up instead.
+  const titheOf = (s) => s.product_id == null ? Number(s.tithe || 0) : Number(s.total) * (pctOf[s.product_name] || 0) / 100;
 
   const now = new Date();
   const dow = now.getDay();
