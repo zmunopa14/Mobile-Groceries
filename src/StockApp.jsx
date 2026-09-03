@@ -4695,15 +4695,19 @@ function Report({ sales, products, low, cats = [], businessId, businessName, wee
 
   // A business can sell for several companies/categories at once, each with
   // its own salary percentage — never one combined rate on the total.
+  // "To God" is its OWN independent percentage of that category's sales,
+  // not a percentage taken out of the salary figure — a category can be
+  // set up as pure giving (e.g. "Pamusika" at 50% to God, 0% salary)
+  // without needing a salary cut to exist first.
   // Looked up from catRows (below) so it always reflects that week's actual
   // sales per company, regardless of the page's own category filter above.
   const salaryBreakdown = salaryCats
-    .filter((c) => Number(c.pct) > 0)
+    .filter((c) => Number(c.pct) > 0 || Number(c.tithe_pct) > 0)
     .map((c) => {
       const catSales = catRows[c.category]?.sales || 0;
-      const amount = catSales * Number(c.pct) / 100;
+      const pct = Number(c.pct) || 0;
       const tithePct = Number(c.tithe_pct ?? 10);
-      return { category: c.category, pct: Number(c.pct), sales: catSales, amount, tithePct, tithe: amount * tithePct / 100 };
+      return { category: c.category, pct, sales: catSales, amount: catSales * pct / 100, tithePct, tithe: catSales * tithePct / 100 };
     });
   const salesSalary = salaryBreakdown.reduce((a, c) => a + c.amount, 0);
   const salesSalaryTithe = salaryBreakdown.reduce((a, c) => a + c.tithe, 0);
@@ -4727,8 +4731,8 @@ function Report({ sales, products, low, cats = [], businessId, businessName, wee
     if (sentSalaryBreakdown.length > 0 || outsideSalary > 0) {
       out += `\nSalary\n`;
       sentSalaryBreakdown.forEach((c) => {
-        out += `Salary from ${c.category} sales (${c.pct}%): ${money(c.amount)}\n`;
-        out += `To God from that salary (${c.tithePct}%): ${money(c.tithe)}\n`;
+        if (c.pct > 0) out += `Salary from ${c.category} sales (${c.pct}%): ${money(c.amount)}\n`;
+        if (c.tithePct > 0) out += `To God from ${c.category} sales (${c.tithePct}%): ${money(c.tithe)}\n`;
       });
       if (outsideSalary > 0) {
         out += `Salary from my job: ${money(outsideSalary)}\n`;
@@ -4916,25 +4920,30 @@ function Report({ sales, products, low, cats = [], businessId, businessName, wee
         </button>
       </div>
       <p style={S.hint}>
-        Each company can have its own salary percentage — not one combined rate on the business's total.
+        Each company can have its own salary percentage and its own "To God" percentage — two separate cuts of
+        that company's sales, not one taken out of the other.
       </p>
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {salaryBreakdown.map((c) => (
           <React.Fragment key={c.category}>
-            <div style={S.card}>
-              <div style={{ flex: 1 }}>
-                <div style={S.cardName}>Salary from {c.category}</div>
-                <div style={S.cardMeta}>{c.pct}% of {money(c.sales)}</div>
+            {c.pct > 0 && (
+              <div style={S.card}>
+                <div style={{ flex: 1 }}>
+                  <div style={S.cardName}>Salary from {c.category}</div>
+                  <div style={S.cardMeta}>{c.pct}% of {money(c.sales)}</div>
+                </div>
+                <div style={{ fontWeight: 800 }}>{money(c.amount)}</div>
               </div>
-              <div style={{ fontWeight: 800 }}>{money(c.amount)}</div>
-            </div>
-            <div style={S.card}>
-              <div style={{ flex: 1 }}>
-                <div style={S.cardName}>To God from that salary</div>
-                <div style={S.cardMeta}>{c.tithePct}%</div>
+            )}
+            {c.tithePct > 0 && (
+              <div style={S.card}>
+                <div style={{ flex: 1 }}>
+                  <div style={S.cardName}>To God from {c.category}</div>
+                  <div style={S.cardMeta}>{c.tithePct}% of {money(c.sales)}</div>
+                </div>
+                <div style={{ fontWeight: 800, color: goldLt }}>{money(c.tithe)}</div>
               </div>
-              <div style={{ fontWeight: 800, color: goldLt }}>{money(c.tithe)}</div>
-            </div>
+            )}
           </React.Fragment>
         ))}
         {salaryBreakdown.length > 1 && (
@@ -4944,7 +4953,7 @@ function Report({ sales, products, low, cats = [], businessId, businessName, wee
               <div style={{ fontWeight: 800, color: accent }}>{money(salesSalary)}</div>
             </div>
             <div style={{ ...S.card, background: "rgba(255,255,255,0.04)" }}>
-              <div style={{ flex: 1 }}><div style={S.cardName}>Total to God from that salary</div></div>
+              <div style={{ flex: 1 }}><div style={S.cardName}>Total to God from those companies</div></div>
               <div style={{ fontWeight: 800, color: goldLt }}>{money(salesSalaryTithe)}</div>
             </div>
           </>
@@ -5107,9 +5116,10 @@ function SalarySettingsModal({ businessId, salary, salaryCats = [], cats = [], o
   return (
     <Modal onClose={onClose} title="Salary settings">
       <p style={{ ...S.hint, marginTop: 0 }}>
-        Each company you sell for can have its own salary percentage — not one combined rate on the business's
-        total — plus its own "to God" percentage taken from that salary amount. Separately, add your normal
-        salary from your own job below. Leave any percentage at 0 to skip it.
+        Each company you sell for can have its own salary percentage and its own "To God" percentage — two
+        separate cuts of that company's sales, not one taken out of the other, so a company can be pure giving
+        (e.g. 0% salary, 50% to God) if that's all it is. Separately, add your normal salary from your own job
+        below. Leave any percentage at 0 to skip it.
       </p>
       {cats.length > 0 && <SectionTitle>Salary from sales, per company</SectionTitle>}
       {cats.map((c) => (
