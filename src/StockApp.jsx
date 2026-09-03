@@ -131,10 +131,18 @@ async function flushPending(biz) {
   let synced = 0;
   for (const sale of list) {
     try {
-      await sb.rpc("record_invoice", {
-        p_items: sale.items, p_seller: sale.seller,
-        p_customer: sale.customer || null, p_phone: sale.phone || null,
-      });
+      try {
+        await sb.rpc("record_invoice", {
+          p_items: sale.items, p_seller: sale.seller,
+          p_customer: sale.customer || null, p_phone: sale.phone || null, p_sold_at: sale.soldAt || null,
+        });
+      } catch (e) {
+        // `p_sold_at` may not exist yet on older deployments — same call without it
+        await sb.rpc("record_invoice", {
+          p_items: sale.items, p_seller: sale.seller,
+          p_customer: sale.customer || null, p_phone: sale.phone || null,
+        });
+      }
       synced++;
     } catch {
       remaining.push(sale); // keep it to retry later
@@ -1174,7 +1182,7 @@ export function Seller({ user, onExit, businessName, sellMode }) {
   const cartTotal = cart.reduce((a, c) => a + c.units * Number(c.product.price), 0);
   const cartCount = cart.reduce((a, c) => a + c.units, 0);
 
-  const checkout = async ({ customer, phone, discount = 0, finalTotal } = {}) => {
+  const checkout = async ({ customer, phone, discount = 0, finalTotal, soldAt } = {}) => {
     if (cart.length === 0) return;
     const items = cart.map((c) => ({ product_id: c.product.id, qty: c.units }));
     const lines = cart.map((c) => ({
@@ -1183,14 +1191,14 @@ export function Seller({ user, onExit, businessName, sellMode }) {
       total: c.units * Number(c.product.price),
     }));
     const baseReceipt = {
-      when: new Date(), seller: user.name, business: businessName,
+      when: soldAt ? new Date(soldAt) : new Date(), seller: user.name, business: businessName,
       customer: customer || "", phone: phone || "", lines,
       subtotal: cartTotal, discount: discount || 0,
       total: finalTotal != null ? finalTotal : cartTotal,
     };
 
     const saveOffline = () => {
-      queueSale(user.business_id, { items, seller: user.name, customer, phone, when: new Date().toISOString() });
+      queueSale(user.business_id, { items, seller: user.name, customer, phone, soldAt, when: new Date().toISOString() });
       if (setPendingCount) setPendingCount(getPending(user.business_id).length);
       setReceipt({ ...baseReceipt, no: "PENDING", offline: true });
       setCart([]); setShowCart(false);
@@ -1201,10 +1209,20 @@ export function Seller({ user, onExit, businessName, sellMode }) {
     if (!isOnline()) { saveOffline(); return; }
 
     try {
-      const inv = await sb.rpc("record_invoice", {
-        p_items: items, p_seller: user.name,
-        p_customer: customer || null, p_phone: phone || null,
-      });
+      let inv;
+      try {
+        inv = await sb.rpc("record_invoice", {
+          p_items: items, p_seller: user.name,
+          p_customer: customer || null, p_phone: phone || null, p_sold_at: soldAt || null,
+        });
+      } catch (e) {
+        if (soldAt) throw e; // a real backdate request failing shouldn't silently record it as "now"
+        // `p_sold_at` may not exist yet on older deployments — same call without it
+        inv = await sb.rpc("record_invoice", {
+          p_items: items, p_seller: user.name,
+          p_customer: customer || null, p_phone: phone || null,
+        });
+      }
       const invoiceNo = typeof inv === "string" ? inv : (inv && inv[0]) || "INV";
       setReceipt({ ...baseReceipt, no: invoiceNo });
       setCart([]); setShowCart(false);
@@ -1360,6 +1378,8 @@ function CartModal({ cart, total, customers = [], onClose, onRemove, onCheckout 
   const [showSug, setShowSug] = useState(false);
   const [discType, setDiscType] = useState("none"); // none | pct | flat
   const [discVal, setDiscVal] = useState("");
+  const todayStr = localDateStr(new Date());
+  const [saleDate, setSaleDate] = useState(todayStr); // lets a sale be entered for a day that's already passed
 
   const discNum = parseFloat(discVal) || 0;
   const discount = discType === "pct" ? total * Math.min(discNum, 100) / 100
@@ -1369,7 +1389,10 @@ function CartModal({ cart, total, customers = [], onClose, onRemove, onCheckout 
 
   const go = async () => {
     setBusy(true);
-    await onCheckout({ customer: customer.trim(), phone: phone.trim(), discount, finalTotal });
+    // Only sent when backdated — an unchanged today's date means the sale
+    // is stamped with the actual current time server-side, same as before.
+    const soldAt = saleDate === todayStr ? null : `${saleDate}T${new Date().toTimeString().slice(0, 8)}`;
+    await onCheckout({ customer: customer.trim(), phone: phone.trim(), discount, finalTotal, soldAt });
     setBusy(false);
   };
 
@@ -1426,6 +1449,11 @@ function CartModal({ cart, total, customers = [], onClose, onRemove, onCheckout 
           <span>{money(finalTotal)}</span>
         </div>
       )}
+      <label style={{ ...S.fieldWrap, marginTop: 10 }}>
+        <span style={S.fieldLabel}>Sale date</span>
+        <input style={S.input} type="date" value={saleDate} max={todayStr} onChange={(e) => setSaleDate(e.target.value)} />
+        {saleDate !== todayStr && <p style={{ ...S.hint, marginTop: 4, marginBottom: 0 }}>Backdated to {new Date(saleDate + "T00:00:00").toLocaleDateString()}.</p>}
+      </label>
       <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
         <div style={{ flex: 1 }}>
           <label style={S.fieldWrap}>
