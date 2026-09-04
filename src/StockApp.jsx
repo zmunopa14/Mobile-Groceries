@@ -1241,7 +1241,7 @@ export function Seller({ user, onExit, businessName, sellMode }) {
     }
   };
 
-  const shown = filterProducts(products, search);
+  const shown = filterProducts(products.filter((p) => !p.archived), search);
   // Seller is a single continuous flow (no tabs), so it doesn't get the
   // sidebar shell used by Admin/ChurchApp — on a wide viewport it just
   // widens its column and lets the product list flow into a grid instead
@@ -2129,6 +2129,7 @@ function StockManager({ products, onChange, businessId, cats = [], onCatsChange 
   const [selectMode, setSelectMode] = useState(false);
   const [selected, setSelected] = useState(() => new Set());
   const [assigningSupplier, setAssigningSupplier] = useState(false);
+  const [showArchived, setShowArchived] = useState(false); // archived products (discontinued, kept for history) are hidden by default
 
   const add = async () => {
     if (!f.name.trim() || f.price === "") return;
@@ -2175,6 +2176,14 @@ function StockManager({ products, onChange, businessId, cats = [], onCatsChange 
     await sb.del("products", `id=eq.${id}`);
     await onChange();
   };
+  const archive = async (id) => {
+    await sb.patch("products", `id=eq.${id}`, { archived: true });
+    await onChange();
+  };
+  const unarchive = async (p) => {
+    await sb.patch("products", `id=eq.${p.id}`, { archived: false });
+    await onChange();
+  };
 
   const toggleSelected = (id) => setSelected((prev) => {
     const next = new Set(prev);
@@ -2198,15 +2207,17 @@ function StockManager({ products, onChange, businessId, cats = [], onCatsChange 
     await onChange();
   };
 
-  const byCat = cat === "All" ? products : products.filter((p) => (p.category || "Uncategorised") === cat);
+  const visible = showArchived ? products.filter((p) => p.archived) : products.filter((p) => !p.archived);
+  const archivedCount = products.filter((p) => p.archived).length;
+  const byCat = cat === "All" ? visible : visible.filter((p) => (p.category || "Uncategorised") === cat);
   const shown = filterProducts(byCat, search);
-  const catCount = (c) => products.filter((p) => (p.category || "Uncategorised") === c).length;
+  const catCount = (c) => visible.filter((p) => (p.category || "Uncategorised") === c).length;
 
   return (
     <>
       <CategorySidebar open={menuOpen} onClose={() => setMenuOpen(false)}
         current={cat} onPick={(c) => { setCat(c); setMenuOpen(false); }}
-        counts={{ All: products.length, ...Object.fromEntries(CATS.map((c) => [c, catCount(c)])) }}
+        counts={{ All: visible.length, ...Object.fromEntries(CATS.map((c) => [c, catCount(c)])) }}
         cats={CATS}
         onAdd={() => { setMenuOpen(false); setOpen(true); }}
         onBulk={() => { setMenuOpen(false); setBulk(true); }}
@@ -2234,8 +2245,18 @@ function StockManager({ products, onChange, businessId, cats = [], onCatsChange 
       )}
 
       {products.length > 0 && <SearchBar value={search} onChange={setSearch} />}
+      {archivedCount > 0 && (
+        <button style={{ ...S.btn, ...S.btnGhost, width: "100%", marginBottom: 10, fontSize: 13 }}
+          onClick={() => setShowArchived((v) => !v)}>
+          {showArchived ? "← Back to active products" : `Show archived (${archivedCount})`}
+        </button>
+      )}
       {products.length === 0 && <p style={S.empty}>No products yet. Open the menu ≡ and tap “Add product”.</p>}
-      {products.length > 0 && shown.length === 0 && <p style={S.empty}>{search ? `No products match “${search}”.` : `No products in ${cat} yet.`}</p>}
+      {products.length > 0 && shown.length === 0 && (
+        <p style={S.empty}>
+          {search ? `No products match “${search}”.` : showArchived ? "No archived products." : `No products in ${cat} yet.`}
+        </p>
+      )}
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {shown.map((p) => {
           const ps = p.pack_size || 1;
@@ -2250,11 +2271,14 @@ function StockManager({ products, onChange, businessId, cats = [], onCatsChange 
                 </div>
               )}
               <div style={{ flex: 1 }}>
-                <div style={S.cardName}>{p.name} {p.qty <= 0 ? <span style={S.outTag}>out — restock</span> : p.qty <= p.low_at ? <span style={S.lowTag}>low</span> : null}</div>
+                <div style={S.cardName}>{p.name} {p.archived ? <span style={S.outTag}>archived</span> : p.qty <= 0 ? <span style={S.outTag}>out — restock</span> : p.qty <= p.low_at ? <span style={S.lowTag}>low</span> : null}</div>
                 <div style={S.cardMeta}>{priceFmt(p.price)}/pack · {p.tithe_pct}% to God{ps > 1 ? ` · pack of ${ps}` : ""}{p.category ? <> · <span style={{ color: goldLt }}>{p.category}</span></> : ""}</div>
                 <div style={{ ...S.cardMeta, color: p.qty <= 0 ? "#C0392B" : "#1F9D55", fontWeight: 600 }}>{p.qty <= 0 ? `${p.qty} packs — out of stock` : stockLabel(p)}</div>
               </div>
-              {!selectMode && <StockEditor product={p} onSet={(v) => setStock(p, v)} />}
+              {!selectMode && p.archived && (
+                <button style={{ ...S.btn, ...S.btnGhost, padding: "8px 12px", fontSize: 12.5 }} onClick={() => unarchive(p)}>Unarchive</button>
+              )}
+              {!selectMode && !p.archived && <StockEditor product={p} onSet={(v) => setStock(p, v)} />}
               {!selectMode && <button style={S.editBtn} onClick={() => setEditing(p)}><Pencil size={15} /></button>}
             </div>
           );
@@ -2289,11 +2313,12 @@ function StockManager({ products, onChange, businessId, cats = [], onCatsChange 
         </Modal>
       )}
       {editing && <EditProductModal product={editing} cats={CATS} onClose={() => setEditing(null)} onSave={saveEdit}
+        onArchive={async () => { await archive(editing.id); setEditing(null); }}
         onDelete={async () => {
           try { await remove(editing.id); setEditing(null); }
           catch (e) {
             alert(e.message.toLowerCase().includes("foreign key") || e.message.toLowerCase().includes("violat")
-              ? "This product already has sales recorded against it, so it can't be deleted. Set its stock to 0 or rename it instead if you want to stop selling it."
+              ? "This product already has sales recorded against it, so it can't be deleted — use Archive instead to stop selling it while keeping its history."
               : e.message);
           }
         }} />}
@@ -2414,7 +2439,7 @@ function BulkAddModal({ businessId, onClose, onDone }) {
 }
 
 // Edit price, percentage, pack size, name, low-stock level
-function EditProductModal({ product, cats = [], onClose, onSave, onDelete }) {
+function EditProductModal({ product, cats = [], onClose, onSave, onDelete, onArchive }) {
   const [name, setName] = useState(product.name);
   const [price, setPrice] = useState(String(product.price));
   const [pct, setPct] = useState(String(product.tithe_pct));
@@ -2489,6 +2514,11 @@ function EditProductModal({ product, cats = [], onClose, onSave, onDelete }) {
       <button style={{ ...S.btn, ...S.btnDark, width: "100%", marginTop: 4 }} disabled={busy} onClick={save}>
         <Check size={18} /> {busy ? "Saving…" : "Save changes"}
       </button>
+      {onArchive && (
+        <button style={{ ...S.btn, ...S.btnGhost, width: "100%", marginTop: 10 }} onClick={onArchive}>
+          Archive — stop selling it, keep its history
+        </button>
+      )}
       {onDelete && <>
         {!confirmDel ? (
           <button style={{ ...S.btn, ...S.btnGhost, width: "100%", marginTop: 10, color: "#C0392B" }} onClick={() => setConfirmDel(true)}>
