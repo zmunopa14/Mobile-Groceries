@@ -133,6 +133,7 @@ async function flushPending(biz) {
   if (list.length === 0) return 0;
   const remaining = [];
   let synced = 0;
+  const stuck = []; // real (non-network) failures found this pass, reported once below
   for (const sale of list) {
     try {
       try {
@@ -152,11 +153,27 @@ async function flushPending(biz) {
         });
       }
       synced++;
-    } catch {
+    } catch (e) {
       remaining.push(sale); // keep it to retry later
+      // A network failure just means "try again once back online" — nothing
+      // to report. A real server error (e.g. a product that no longer
+      // exists) will fail exactly the same way every retry, so instead of
+      // silently saying "still syncing" forever with no way to tell why,
+      // surface it once per stuck sale rather than on every automatic retry.
+      if (!(e instanceof TypeError) && !sale._alerted) {
+        sale._alerted = true;
+        stuck.push(e.message);
+      }
     }
   }
   setPending(biz, remaining);
+  if (stuck.length > 0) {
+    alert(
+      `${stuck.length} offline sale${stuck.length > 1 ? "s" : ""} can't be saved and will keep failing until this is fixed:\n\n` +
+      `${[...new Set(stuck)].join("\n")}\n\n` +
+      `They're still saved on this phone (not lost) — please tell an admin.`
+    );
+  }
   return synced;
 }
 
@@ -679,11 +696,36 @@ export function PamusikaMark({ size = 26 }) {
 // ============================================================
 // 3. AUTH ENTRY — full-bleed photo front door: Sign in or Register
 // ============================================================
+// One screen, not three: business name, your name, and PIN together — tap
+// Sign in once and it looks up the business then logs you in, back to back,
+// instead of a "find your business" step before you can even see the PIN
+// field. Register still gets its own screen, reached via the link below.
 function AuthEntry({ onLogin }) {
-  const [mode, setMode] = useState(null); // null | "signin" | "register"
+  const [mode, setMode] = useState("signin"); // "signin" | "register"
 
-  if (mode === "signin") return <Login onLogin={onLogin} onBack={() => setMode(null)} />;
-  if (mode === "register") return <RegisterBusiness onLogin={onLogin} onBack={() => setMode(null)} />;
+  if (mode === "register") return <RegisterBusiness onLogin={onLogin} onBack={() => setMode("signin")} />;
+
+  return <SignInScreen onLogin={onLogin} onRegister={() => setMode("register")} />;
+}
+
+function SignInScreen({ onLogin, onRegister }) {
+  const [bizInput, setBizInput] = useState("");
+  const [name, setName] = useState("");
+  const [pin, setPin] = useState("");
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const submit = async () => {
+    setErr(""); setBusy(true);
+    try {
+      const bizRows = await sb.rpc("find_business", { p_name: bizInput.trim() });
+      if (!bizRows || !bizRows.length) { setErr("We couldn't find that business name. Check the spelling."); setBusy(false); return; }
+      const rows = await sb.rpc("login_in_business", { p_name: name.trim(), p_pin: pin, p_business_id: bizRows[0].id });
+      if (rows && rows.length) { onLogin(rows[0]); return; }
+      setErr("Name or PIN is incorrect for this business.");
+    } catch (e) { setErr(e.message); }
+    setBusy(false);
+  };
 
   return (
     <div style={{ position: "relative", minHeight: "100vh", overflow: "hidden" }}>
@@ -703,12 +745,28 @@ function AuthEntry({ onLogin }) {
         <div style={{ ...S.loginCard, maxWidth: 420, width: "100%" }}>
           <div style={S.logoMark}><PamusikaMark size={30} /></div>
           <h1 style={S.loginTitle}>Pamusika</h1>
-          <p style={S.loginSub}>Smart, simple stock and sales for your business.</p>
-          <button style={{ ...S.btn, ...S.btnGold, width: "100%", marginBottom: 10 }} onClick={() => setMode("signin")}>
-            Sign in
+          <div style={S.fieldWrap}>
+            <span style={{ ...S.fieldLabel, color: "rgba(234,243,236,0.8)" }}>Business name</span>
+            <input style={S.inputDark} value={bizInput} autoFocus onChange={(e) => setBizInput(e.target.value)}
+              placeholder="e.g. Samah Valley" />
+          </div>
+          <div style={S.fieldWrap}>
+            <span style={{ ...S.fieldLabel, color: "rgba(234,243,236,0.8)" }}>Your name</span>
+            <input style={S.inputDark} value={name} onChange={(e) => setName(e.target.value)} placeholder="Your name" />
+          </div>
+          <div style={S.fieldWrap}>
+            <span style={{ ...S.fieldLabel, color: "rgba(234,243,236,0.8)" }}>PIN</span>
+            <input style={S.inputDark} value={pin} type="password" inputMode="numeric"
+              onChange={(e) => setPin(e.target.value.replace(/\D/g, "").slice(0, 4))}
+              onKeyDown={(e) => { if (e.key === "Enter" && !busy) submit(); }} placeholder="••••" />
+          </div>
+          {err && <p style={S.errTxt}>{err}</p>}
+          <button style={{ ...S.btn, ...S.btnGold, width: "100%", marginTop: 6 }}
+            disabled={busy || !bizInput.trim() || !name.trim() || pin.length < 4} onClick={submit}>
+            {busy ? "Signing in…" : "Sign in"}
           </button>
-          <button style={{ ...S.btn, ...S.btnGhost, width: "100%" }} onClick={() => setMode("register")}>
-            Register a new business
+          <button style={{ ...S.btn, ...S.btnGhost, width: "100%", marginTop: 8 }} onClick={onRegister}>
+            New business? Register
           </button>
         </div>
       </div>
@@ -780,122 +838,6 @@ function RegisterBusiness({ onLogin, onBack }) {
           ← Back
         </button>
       </div>
-    </div>
-  );
-}
-
-// ============================================================
-// 4. LOGIN (two-step: business name, then name + PIN)
-// ============================================================
-function Login({ onLogin, onBack }) {
-  const [step, setStep] = useState(1);
-  const [bizInput, setBizInput] = useState("");
-  const [biz, setBiz] = useState(null); // {id, name}
-  const [name, setName] = useState("");
-  const [pin, setPin] = useState("");
-  const [err, setErr] = useState("");
-  const [busy, setBusy] = useState(false);
-
-  const findBiz = async () => {
-    setErr(""); setBusy(true);
-    try {
-      const rows = await sb.rpc("find_business", { p_name: bizInput.trim() });
-      if (rows && rows.length) { setBiz(rows[0]); setStep(2); }
-      else setErr("We couldn't find that business name. Check the spelling.");
-    } catch (e) { setErr(e.message); }
-    setBusy(false);
-  };
-
-  const submit = async () => {
-    setErr(""); setBusy(true);
-    try {
-      const rows = await sb.rpc("login_in_business", { p_name: name.trim(), p_pin: pin, p_business_id: biz.id });
-      if (rows && rows.length) onLogin(rows[0]);
-      else setErr("Name or PIN is incorrect for this business.");
-    } catch (e) { setErr(e.message); }
-    setBusy(false);
-  };
-
-  return (
-    <div style={S.loginDarkShell}>
-      <MarketWatermark />
-      <div style={{ ...S.loginCard, position: "relative", zIndex: 1 }}>
-        <HeroImage />
-        <div style={S.logoMark}><PamusikaMark size={30} /></div>
-        <h1 style={S.loginTitle}>Pamusika</h1>
-
-        {step === 1 ? (
-          <>
-            <p style={S.loginSub}>Enter your business name to begin.</p>
-            <div style={S.fieldWrap}>
-              <span style={{ ...S.fieldLabel, color: "rgba(234,243,236,0.8)" }}>Business name</span>
-              <input style={S.inputDark} value={bizInput} autoFocus
-                onChange={(e) => setBizInput(e.target.value)}
-                onKeyDown={(e) => { if (e.key === "Enter" && bizInput.trim()) findBiz(); }}
-                placeholder="e.g. Samah Valley" />
-            </div>
-            {err && <p style={S.errTxt}>{err}</p>}
-            <button style={{ ...S.btn, ...S.btnGold, width: "100%", marginTop: 10 }}
-              disabled={busy || !bizInput.trim()} onClick={findBiz}>
-              {busy ? "Checking…" : "Continue"}
-            </button>
-            {onBack && (
-              <button style={{ ...S.btn, ...S.btnGhost, width: "100%", marginTop: 10 }} onClick={onBack}>
-                ← Back
-              </button>
-            )}
-          </>
-        ) : (
-          <>
-            <p style={S.loginSub}>Welcome to <b style={{ color: goldLt }}>{biz.name}</b>. Enter your name and PIN.</p>
-            <div style={S.fieldWrap}>
-              <span style={{ ...S.fieldLabel, color: "rgba(234,243,236,0.8)" }}>Name</span>
-              <input style={S.inputDark} value={name} autoFocus onChange={(e) => setName(e.target.value)} placeholder="Your name" />
-            </div>
-            <div style={S.fieldWrap}>
-              <span style={{ ...S.fieldLabel, color: "rgba(234,243,236,0.8)" }}>PIN</span>
-              <PinDots value={pin} />
-            </div>
-            <Keypad value={pin} onChange={setPin} dark />
-            {err && <p style={S.errTxt}>{err}</p>}
-            <button style={{ ...S.btn, ...S.btnGold, width: "100%", marginTop: 10 }}
-              disabled={busy || !name.trim() || pin.length < 4} onClick={submit}>
-              {busy ? "Checking…" : "Sign in"}
-            </button>
-            <button style={{ ...S.btn, ...S.btnGhost, width: "100%", marginTop: 8 }}
-              onClick={() => { setStep(1); setBiz(null); setName(""); setPin(""); setErr(""); }}>
-              ← Different business
-            </button>
-          </>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function PinDots({ value }) {
-  return (
-    <div style={{ display: "flex", gap: 12, justifyContent: "center", padding: "8px 0" }}>
-      {[0, 1, 2, 3].map((i) => (
-        <div key={i} style={{ ...S.pinDot, ...(i < value.length ? S.pinDotFull : {}) }} />
-      ))}
-    </div>
-  );
-}
-
-function Keypad({ value, onChange, dark }) {
-  const press = (k) => {
-    if (k === "del") onChange(value.slice(0, -1));
-    else if (value.length < 4) onChange(value + k);
-  };
-  return (
-    <div style={S.keypad}>
-      {["1","2","3","4","5","6","7","8","9","","0","del"].map((k, i) =>
-        k === "" ? <div key={i} /> :
-        <button key={i} style={{ ...S.key, ...(dark ? S.keyDark : {}) }} onClick={() => press(k)}>
-          {k === "del" ? <Delete size={18} /> : k}
-        </button>
-      )}
     </div>
   );
 }
@@ -1236,8 +1178,17 @@ export function Seller({ user, onExit, businessName, sellMode }) {
       setCart([]); setShowCart(false);
       await refresh();
     } catch (e) {
-      // Server unreachable mid-sale → fall back to offline queue instead of losing it
-      saveOffline();
+      // A genuine network failure (fetch never reached the server) is safe to
+      // queue offline — it'll succeed once connectivity returns. A REAL error
+      // from the server (e.g. a product that's been edited/removed) will fail
+      // exactly the same way every time it's retried, so silently queuing it
+      // would just hide a real problem forever behind "still syncing" — show
+      // it instead, and leave the basket as-is so the item can be fixed.
+      if (e instanceof TypeError || !isOnline()) {
+        saveOffline();
+      } else {
+        alert(`This sale could not be saved: ${e.message}\n\nNothing was recorded. Check the items in the basket — one of them may have been edited, renamed, or removed — then try again.`);
+      }
     }
   };
 
@@ -5704,71 +5655,6 @@ export function MarketWatermark() {
   );
 }
 
-function DeliveryScene() {
-  // Code-drawn abstract mark, no external image needed — echoes PamusikaMark's
-  // layered-diamond motif at hero scale instead of a literal illustrated scene,
-  // matching a premium/editorial feel rather than a clip-art vibe.
-  const rings = [
-    { r: 74, op: 0.10 }, { r: 56, op: 0.16 }, { r: 40, op: 0.24 },
-  ];
-  return (
-    <div style={S.heroWrap}>
-      <svg viewBox="0 0 360 200" style={{ width: "100%", display: "block" }} aria-hidden="true">
-        <defs>
-          <linearGradient id="heroSky" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0" stopColor="#153a2d" />
-            <stop offset="1" stopColor="#0a1e17" />
-          </linearGradient>
-          <radialGradient id="heroGlow" cx="50%" cy="42%" r="60%">
-            <stop offset="0" stopColor="#E6C44D" stopOpacity="0.35" />
-            <stop offset="1" stopColor="#E6C44D" stopOpacity="0" />
-          </radialGradient>
-          <linearGradient id="heroDiamond" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0" stopColor="#F3DA84" />
-            <stop offset="1" stopColor="#C9A227" />
-          </linearGradient>
-        </defs>
-
-        <rect x="0" y="0" width="360" height="200" fill="url(#heroSky)" />
-        <circle cx="180" cy="86" r="90" fill="url(#heroGlow)" />
-
-        {rings.map((ring, i) => (
-          <circle key={i} cx="180" cy="86" r={ring.r} fill="none" stroke="#E6C44D" strokeWidth="1" opacity={ring.op} />
-        ))}
-
-        <g style={{ transformOrigin: "180px 86px", animation: "bob 5s ease-in-out infinite" }}>
-          <path d="M180 40 L228 66 L180 92 L132 66 Z" fill="url(#heroDiamond)" opacity="0.94" />
-          <path d="M180 60 L216 80 L180 100 L144 80 Z" fill="url(#heroDiamond)" opacity="0.66" />
-          <path d="M180 80 L204 94 L180 108 L156 94 Z" fill="url(#heroDiamond)" opacity="0.38" />
-        </g>
-
-        <text x="180" y="150" textAnchor="middle" fontSize="13" fontWeight="600" letterSpacing="0.28em"
-          fill="#EAF3EC" opacity="0.55" fontFamily="Inter, sans-serif">SMART BUSINESS</text>
-
-        <g opacity="0.85">
-          <circle cx="86" cy="52" r="2" fill="#F5C443" style={{ animation: "rise 3.4s ease-in-out infinite" }} />
-          <circle cx="276" cy="118" r="2" fill="#F5C443" style={{ animation: "rise 2.8s ease-in-out infinite 0.6s" }} />
-          <circle cx="264" cy="46" r="1.6" fill="#F5C443" style={{ animation: "rise 3s ease-in-out infinite 1.1s" }} />
-        </g>
-      </svg>
-    </div>
-  );
-}
-
-export function HeroImage() {
-  // Optional real photo / 3D render: drop hero.jpg into the project's public folder.
-  // It renders here in a premium gold-edged frame with a soft glow.
-  const [ok, setOk] = useState(true);
-  if (!ok) return <DeliveryScene />;
-  return (
-    <div style={{ position: "relative", marginBottom: 16, borderRadius: 20, overflow: "hidden",
-      border: "1px solid rgba(230,196,77,0.45)", boxShadow: "0 20px 50px rgba(0,0,0,0.55), 0 0 0 1px rgba(230,196,77,0.15)" }}>
-      <img src="/hero.jpg" alt="" onError={() => setOk(false)}
-        style={{ width: "100%", height: 200, objectFit: "cover", objectPosition: "center 22%", display: "block" }} />
-      <div style={{ position: "absolute", inset: 0, background: "linear-gradient(180deg, rgba(7,22,15,0) 40%, rgba(7,22,15,0.55) 100%)" }} />
-    </div>
-  );
-}
 function SetupNotice() {
   return (
     <div style={S.shell}>
