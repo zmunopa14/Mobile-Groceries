@@ -742,30 +742,30 @@ function SignInScreen({ onLogin, onRegister }) {
         position: "relative", minHeight: "100vh", display: "flex", flexDirection: "column",
         justifyContent: "flex-end", padding: 20, boxSizing: "border-box",
       }}>
-        <div style={{ ...S.loginCard, maxWidth: 420, width: "100%", boxSizing: "border-box" }}>
-          <div style={S.logoMark}><PamusikaMark size={30} /></div>
-          <h1 style={S.loginTitle}>Pamusika</h1>
-          <div style={S.fieldWrap}>
+        <div style={{ ...S.loginCard, maxWidth: 420, width: "100%", boxSizing: "border-box", padding: "18px 22px 22px" }}>
+          <div style={{ ...S.logoMark, width: 44, height: 44, marginBottom: 8 }}><PamusikaMark size={22} /></div>
+          <h1 style={{ ...S.loginTitle, fontSize: 28, margin: "0 0 12px" }}>Pamusika</h1>
+          <div style={{ ...S.fieldWrap, marginBottom: 8 }}>
             <span style={{ ...S.fieldLabel, color: "rgba(234,243,236,0.8)" }}>Business name</span>
             <input style={S.inputDark} value={bizInput} autoFocus onChange={(e) => setBizInput(e.target.value)}
               placeholder="e.g. Samah Valley" />
           </div>
-          <div style={S.fieldWrap}>
+          <div style={{ ...S.fieldWrap, marginBottom: 8 }}>
             <span style={{ ...S.fieldLabel, color: "rgba(234,243,236,0.8)" }}>Your name</span>
             <input style={S.inputDark} value={name} onChange={(e) => setName(e.target.value)} placeholder="Your name" />
           </div>
-          <div style={S.fieldWrap}>
+          <div style={{ ...S.fieldWrap, marginBottom: 10 }}>
             <span style={{ ...S.fieldLabel, color: "rgba(234,243,236,0.8)" }}>PIN</span>
             <input style={S.inputDark} value={pin} type="password" inputMode="numeric"
               onChange={(e) => setPin(e.target.value.replace(/\D/g, "").slice(0, 4))}
               onKeyDown={(e) => { if (e.key === "Enter" && !busy) submit(); }} placeholder="••••" />
           </div>
-          {err && <p style={S.errTxt}>{err}</p>}
-          <button style={{ ...S.btn, ...S.btnGold, width: "100%", marginTop: 6 }}
+          {err && <p style={{ ...S.errTxt, marginTop: 0, marginBottom: 8 }}>{err}</p>}
+          <button style={{ ...S.btn, ...S.btnGold, width: "100%" }}
             disabled={busy || !bizInput.trim() || !name.trim() || pin.length < 4} onClick={submit}>
             {busy ? "Signing in…" : "Sign in"}
           </button>
-          <button style={{ ...S.btn, ...S.btnGhost, width: "100%", marginTop: 8 }} onClick={onRegister}>
+          <button style={{ ...S.btn, ...S.btnGhost, width: "100%", marginTop: 6 }} onClick={onRegister}>
             New business? Register
           </button>
         </div>
