@@ -1060,7 +1060,7 @@ export function Admin({ user, onExit, businessName, onSell }) {
         {tab === "compare" && <Compare sales={sales} />}
         {tab === "cashups" && <CashUps businessId={user.business_id} sales={sales} />}
         {tab === "report" && <Report sales={sales} products={products} low={[...out, ...low]} cats={cats} businessId={user.business_id} businessName={businessName}
-          weekStartDay={reportWeekday} onWeekStartDayChange={setReportWeekday} />}
+          personName={user.name} weekStartDay={reportWeekday} onWeekStartDayChange={setReportWeekday} />}
         {tab === "team" && <TeamManager onChange={refresh} businessId={user.business_id} sales={sales} user={user} />}
         {tab === "approvals" && <ApprovalsTab businessId={user.business_id} businessName={businessName} />}
       </>}
@@ -3266,10 +3266,10 @@ async function saveSupplierLink(businessId, fields) {
 }
 
 async function fetchSalarySettings(businessId) {
-  const fallback = { outside_salary: 0, outside_tithe_pct: 10 };
+  const fallback = { outside_salary: 0, outside_tithe_pct: 10, sales_salary_pct: 0, sales_salary_tithe_pct: 10 };
   try {
     const rows = await sb.select("business_salary_settings", `business_id=eq.${businessId}`);
-    return rows[0] || fallback;
+    return rows[0] ? { ...fallback, ...rows[0] } : fallback;
   } catch { return fallback; } // table may not exist yet on older deployments
 }
 async function saveSalarySettings(businessId, fields) {
@@ -4705,7 +4705,7 @@ function Compare({ sales }) {
 
 const WEEKDAY_NAMES = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
 
-function Report({ sales, products, low, cats = [], businessId, businessName, weekStartDay = 2, onWeekStartDayChange }) {
+function Report({ sales, products, low, cats = [], businessId, businessName, personName, weekStartDay = 2, onWeekStartDayChange }) {
   // The week runs from whichever day is chosen (default Tuesday) to the day
   // before it, next week. Let the admin step back through weeks, or switch
   // to picking an exact date range instead — not everyone reports weekly.
@@ -4714,7 +4714,7 @@ function Report({ sales, products, low, cats = [], businessId, businessName, wee
   const [customRange, setCustomRange] = useState(false);
   const [fromDate, setFromDate] = useState(() => localDateStr(new Date()));
   const [toDate, setToDate] = useState(() => localDateStr(new Date()));
-  const [salary, setSalary] = useState({ outside_salary: 0, outside_tithe_pct: 10 });
+  const [salary, setSalary] = useState({ outside_salary: 0, outside_tithe_pct: 10, sales_salary_pct: 0, sales_salary_tithe_pct: 10 });
   const [salaryCats, setSalaryCats] = useState([]); // [{category, pct}] — a business can pull salary from several
   const [editingSalary, setEditingSalary] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -4738,6 +4738,8 @@ function Report({ sales, products, low, cats = [], businessId, businessName, wee
   const [sendingCat, setSendingCat] = useState(null); // category currently being sent, for a busy spinner
   const [sentToast, setSentToast] = useState("");
 
+  const [cashInHand, setCashInHand] = useState(0);
+
   const loadSalary = useCallback(async () => {
     if (!businessId) return;
     const [settings, catPcts] = await Promise.all([fetchSalarySettings(businessId), fetchSalaryCategories(businessId)]);
@@ -4745,6 +4747,21 @@ function Report({ sales, products, low, cats = [], businessId, businessName, wee
     setSalaryCats(catPcts);
   }, [businessId]);
   useEffect(() => { loadSalary(); }, [loadSalary]);
+
+  // The actual cash currently in hand, business-wide — whatever was last
+  // physically counted at any seller's most recent cash-up, not a
+  // recomputed theoretical figure.
+  useEffect(() => {
+    if (!businessId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const rows = await sb.select("day_reports", `business_id=eq.${businessId}&order=created_at.desc&limit=1`);
+        if (!cancelled) setCashInHand(rows.length ? Number(rows[0].cash_in_hand || 0) : 0);
+      } catch { if (!cancelled) setCashInHand(0); }
+    })();
+    return () => { cancelled = true; };
+  }, [businessId]);
 
   const catOf = {}, pctOf = {};
   (products || []).forEach((p) => { catOf[p.name] = p.category || "Uncategorised"; pctOf[p.name] = Number(p.tithe_pct) || 0; });
@@ -4862,8 +4879,21 @@ function Report({ sales, products, low, cats = [], businessId, businessName, wee
     });
   const salesSalary = salaryBreakdown.reduce((a, c) => a + c.amount, 0);
   const salesSalaryTithe = salaryBreakdown.reduce((a, c) => a + c.tithe, 0);
+  // A salary that's simply "X% of total sales" — no category needed, for a
+  // business with none set up, or where the salary isn't tied to just one
+  // company. Same rule as everywhere else: To God is its own % of sales,
+  // not a cut taken out of the salary figure.
+  const overallSalaryPct = Number(salary.sales_salary_pct) || 0;
+  const overallSalary = weekTotalSales * overallSalaryPct / 100;
+  const overallSalaryTithePct = Number(salary.sales_salary_tithe_pct) || 0;
+  const overallSalaryTithe = weekTotalSales * overallSalaryTithePct / 100;
   const outsideSalary = Number(salary.outside_salary) || 0;
   const outsideTithe = outsideSalary * (Number(salary.outside_tithe_pct) || 0) / 100;
+  // Combined figures for the plain "Sales / Salary / To God / Cash in hand"
+  // summary layout.
+  const totalSalary = salesSalary + overallSalary + outsideSalary;
+  const totalSalaryTithe = salesSalaryTithe + overallSalaryTithe + outsideTithe;
+  const totalToGod = weekTotalTithe + totalSalaryTithe;
 
   const reportText = () => {
     // Only what's still checked under "Include in shared report" goes out —
@@ -4879,12 +4909,14 @@ function Report({ sales, products, low, cats = [], businessId, businessName, wee
 
     let out = `${businessName || "Business"} — Weekly report\n${rangeLabel}\n\n`;
     out += `Sales: ${money(sentSales)}\nTo God (from sales): ${money(sentTithe)}\n`;
-    if (sentSalaryBreakdown.length > 0 || outsideSalary > 0) {
+    if (sentSalaryBreakdown.length > 0 || overallSalaryPct > 0 || overallSalaryTithePct > 0 || outsideSalary > 0) {
       out += `\nSalary\n`;
       sentSalaryBreakdown.forEach((c) => {
         if (c.pct > 0) out += `Salary from ${c.category} sales (${c.pct}%): ${money(c.amount)}\n`;
         if (c.tithePct > 0) out += `To God from ${c.category} sales (${c.tithePct}%): ${money(c.tithe)}\n`;
       });
+      if (overallSalaryPct > 0) out += `Salary (${overallSalaryPct}% of sales): ${money(overallSalary)}\n`;
+      if (overallSalaryTithePct > 0) out += `To God from sales (${overallSalaryTithePct}%): ${money(overallSalaryTithe)}\n`;
       if (outsideSalary > 0) {
         out += `Salary from my job: ${money(outsideSalary)}\n`;
         out += `To God from that salary (${salary.outside_tithe_pct}%): ${money(outsideTithe)}\n`;
@@ -4916,6 +4948,32 @@ function Report({ sales, products, low, cats = [], businessId, businessName, wee
         <div>
           <div style={{ ...S.cardName, color: "#fff" }}>{cat === "All" ? "Weekly report" : `${cat} — weekly`}</div>
           <div style={{ ...S.cardMeta, color: "rgba(255,255,255,0.8)" }}>{rangeLabel}</div>
+        </div>
+      </div>
+
+      <div style={{ ...S.card, flexDirection: "column", alignItems: "stretch", gap: 6, marginBottom: 12 }}>
+        <div style={S.cardMeta}>{rangeLabel}</div>
+        <div style={{ fontWeight: 800, fontSize: 15 }}>{personName || "—"} · {businessName || "Business"}</div>
+        <div style={{ height: 1, background: line, margin: "4px 0" }} />
+        {[
+          ["Sales", money(weekTotalSales)],
+          ["% To God", money(weekTotalTithe)],
+          ["Salary", money(totalSalary)],
+          ["% to God", money(totalSalaryTithe)],
+        ].map(([label, value]) => (
+          <div key={label} style={{ display: "flex", justifyContent: "space-between" }}>
+            <span style={{ color: muted, fontWeight: 600 }}>{label}</span>
+            <span style={{ fontWeight: 700 }}>{value}</span>
+          </div>
+        ))}
+        <div style={{ height: 1, background: line, margin: "4px 0" }} />
+        <div style={{ display: "flex", justifyContent: "space-between" }}>
+          <span style={{ fontWeight: 800 }}>Total money to God</span>
+          <span style={{ fontWeight: 800, color: goldLt }}>{money(totalToGod)}</span>
+        </div>
+        <div style={{ display: "flex", justifyContent: "space-between" }}>
+          <span style={{ fontWeight: 800 }}>Cash in Hand</span>
+          <span style={{ fontWeight: 800, color: accent }}>{money(cashInHand)}</span>
         </div>
       </div>
 
@@ -5109,6 +5167,28 @@ function Report({ sales, products, low, cats = [], businessId, businessName, wee
             </div>
           </>
         )}
+        {(overallSalaryPct > 0 || overallSalaryTithePct > 0) && (
+          <>
+            {overallSalaryPct > 0 && (
+              <div style={S.card}>
+                <div style={{ flex: 1 }}>
+                  <div style={S.cardName}>Salary ({overallSalaryPct}% of sales)</div>
+                  <div style={S.cardMeta}>No category — {overallSalaryPct}% of {money(weekTotalSales)}</div>
+                </div>
+                <div style={{ fontWeight: 800 }}>{money(overallSalary)}</div>
+              </div>
+            )}
+            {overallSalaryTithePct > 0 && (
+              <div style={S.card}>
+                <div style={{ flex: 1 }}>
+                  <div style={S.cardName}>To God from sales</div>
+                  <div style={S.cardMeta}>{overallSalaryTithePct}% of {money(weekTotalSales)}</div>
+                </div>
+                <div style={{ fontWeight: 800, color: goldLt }}>{money(overallSalaryTithe)}</div>
+              </div>
+            )}
+          </>
+        )}
         {outsideSalary > 0 && (
           <>
             <div style={S.card}>
@@ -5124,7 +5204,7 @@ function Report({ sales, products, low, cats = [], businessId, businessName, wee
             </div>
           </>
         )}
-        {salaryBreakdown.length === 0 && outsideSalary <= 0 && (
+        {salaryBreakdown.length === 0 && overallSalaryPct <= 0 && overallSalaryTithePct <= 0 && outsideSalary <= 0 && (
           <p style={S.empty}>Nothing set up yet — tap Edit to add a salary percentage or a salary from your job.</p>
         )}
       </div>
@@ -5223,6 +5303,8 @@ function SalarySettingsModal({ businessId, salary, salaryCats = [], cats = [], o
     initialRows[c] = { pct: String(existing?.pct ?? 0), tithe_pct: String(existing?.tithe_pct ?? 10) };
   });
   const [rows, setRows] = useState(initialRows);
+  const [salesSalaryPct, setSalesSalaryPct] = useState(String(salary.sales_salary_pct ?? 0));
+  const [salesSalaryTithePct, setSalesSalaryTithePct] = useState(String(salary.sales_salary_tithe_pct ?? 10));
   const [outsideSalary, setOutsideSalary] = useState(String(salary.outside_salary ?? 0));
   const [outsideTithePct, setOutsideTithePct] = useState(String(salary.outside_tithe_pct ?? 10));
   const [busy, setBusy] = useState(false);
@@ -5246,6 +5328,8 @@ function SalarySettingsModal({ businessId, salary, salaryCats = [], cats = [], o
     setBusy(true); setErr("");
     try {
       const settingsFields = {
+        sales_salary_pct: Math.max(0, Number(salesSalaryPct) || 0),
+        sales_salary_tithe_pct: Math.max(0, Number(salesSalaryTithePct) || 0),
         outside_salary: Math.max(0, Number(outsideSalary) || 0),
         outside_tithe_pct: Math.max(0, Number(outsideTithePct) || 0),
       };
@@ -5290,6 +5374,23 @@ function SalarySettingsModal({ businessId, salary, salaryCats = [], cats = [], o
       {cats.length === 0 && (
         <p style={S.hint}>No companies/categories set up yet on your products, so there's nothing to pick from here.</p>
       )}
+      <SectionTitle>Salary as a % of total sales</SectionTitle>
+      <p style={S.hint}>
+        No category needed — use this when the salary is simply a percentage of everything sold, not tied to one
+        company.
+      </p>
+      <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+        <div style={{ ...S.fieldWrap, flex: 1, marginBottom: 0 }}>
+          <span style={S.fieldLabel}>Salary (% of total sales)</span>
+          <input style={S.input} value={salesSalaryPct} inputMode="decimal"
+            onChange={(e) => setSalesSalaryPct(e.target.value.replace(/[^0-9.]/g, ""))} placeholder="e.g. 5" />
+        </div>
+        <div style={{ ...S.fieldWrap, flex: 1, marginBottom: 0 }}>
+          <span style={S.fieldLabel}>To God (%)</span>
+          <input style={S.input} value={salesSalaryTithePct} inputMode="decimal"
+            onChange={(e) => setSalesSalaryTithePct(e.target.value.replace(/[^0-9.]/g, ""))} placeholder="e.g. 10" />
+        </div>
+      </div>
       <SectionTitle>Salary from your job</SectionTitle>
       <div style={S.fieldWrap}>
         <span style={S.fieldLabel}>Fixed amount</span>
