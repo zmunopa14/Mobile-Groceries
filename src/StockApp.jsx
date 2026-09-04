@@ -1748,11 +1748,15 @@ function CloseDayModal({ sales, user, onClose, onSubmitted }) {
   const [busy, setBusy] = useState(false);
   const [expenses, setExpenses] = useState([]); // {amount, note, photo_url}
   const [addingExp, setAddingExp] = useState(false);
-  const [sinceTime, setSinceTime] = useState(null);   // cutoff: last cash-up time for this day
+  const [reportedIds, setReportedIds] = useState(() => new Set()); // sale ids already covered by an earlier cash-up this day
+  const [legacyCutoff, setLegacyCutoff] = useState(null); // fallback time-cutoff, only for cash-ups from before sale_ids existed
   const [priorCount, setPriorCount] = useState(0);    // how many cash-ups already done this day
 
-  // When the chosen day changes, find the most recent cash-up already submitted
-  // for this seller+day. Only sales AFTER that time count for the new cash-up.
+  // When the chosen day changes, find every cash-up already submitted for
+  // this seller+day and collect exactly which sales each one covered — a
+  // sale only counts as "new" if it isn't in that set. (A time cutoff alone
+  // doesn't work here: a backdated sale's date can be earlier than when the
+  // last cash-up was actually submitted, even though it was just added.)
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -1761,8 +1765,15 @@ function CloseDayModal({ sales, user, onClose, onSubmitted }) {
           `business_id=eq.${user.business_id}&seller_name=eq.${encodeURIComponent(user.name)}&report_date=eq.${day}&order=created_at.desc`);
         if (cancelled) return;
         setPriorCount(rows.length);
-        setSinceTime(rows.length > 0 ? rows[0].created_at : null);
-      } catch { if (!cancelled) { setSinceTime(null); setPriorCount(0); } }
+        const ids = new Set();
+        let cutoff = null;
+        rows.forEach((r) => {
+          if (Array.isArray(r.sale_ids)) r.sale_ids.forEach((id) => ids.add(id));
+          else if (!cutoff) cutoff = r.created_at; // a report from before this fix — keep its old protection
+        });
+        setReportedIds(ids);
+        setLegacyCutoff(cutoff);
+      } catch { if (!cancelled) { setReportedIds(new Set()); setLegacyCutoff(null); setPriorCount(0); } }
     })();
     return () => { cancelled = true; };
   }, [day, user.business_id, user.name]);
@@ -1770,7 +1781,8 @@ function CloseDayModal({ sales, user, onClose, onSubmitted }) {
   const dayInvoices = groupByInvoice(
     sales.filter((s) =>
       localDateStr(new Date(s.sold_at)) === day &&
-      (!sinceTime || new Date(s.sold_at) > new Date(sinceTime))
+      !reportedIds.has(s.id) &&
+      (!legacyCutoff || new Date(s.sold_at) > new Date(legacyCutoff))
     )
   );
   const salesTotal = dayInvoices.reduce((a, inv) => a + inv.total, 0);
@@ -1783,7 +1795,7 @@ function CloseDayModal({ sales, user, onClose, onSubmitted }) {
   const submit = async () => {
     setBusy(true);
     try {
-      await sb.insert("day_reports", {
+      const base = {
         business_id: user.business_id,
         seller_name: user.name,
         report_date: day,
@@ -1794,7 +1806,13 @@ function CloseDayModal({ sales, user, onClose, onSubmitted }) {
         expenses: expenses,
         expenses_total: expensesTotal,
         confirmed: false,
-      });
+      };
+      try {
+        await sb.insert("day_reports", { ...base, sale_ids: dayInvoices.flatMap((inv) => inv.lines.map((l) => l.id)) });
+      } catch (e) {
+        // `sale_ids` may not exist yet on older deployments — same submit without it
+        await sb.insert("day_reports", base);
+      }
       onSubmitted();
     } catch (e) { alert(e.message); }
     setBusy(false);
@@ -1808,7 +1826,7 @@ function CloseDayModal({ sales, user, onClose, onSubmitted }) {
       </div>
       {priorCount > 0 && (
         <p style={{ ...S.hint, color: mango, marginTop: 0 }}>
-          You already did {priorCount} cash-up{priorCount > 1 ? "s" : ""} for this day. This one covers only sales made since then.
+          You already did {priorCount} cash-up{priorCount > 1 ? "s" : ""} for this day. This one only counts sales not already included in an earlier one.
         </p>
       )}
       <div style={S.cartTotalRow}>
