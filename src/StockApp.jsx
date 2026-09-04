@@ -742,7 +742,7 @@ function SignInScreen({ onLogin, onRegister }) {
         position: "relative", minHeight: "100vh", display: "flex", flexDirection: "column",
         justifyContent: "flex-end", padding: 20, boxSizing: "border-box",
       }}>
-        <div style={{ ...S.loginCard, maxWidth: 420, width: "100%" }}>
+        <div style={{ ...S.loginCard, maxWidth: 420, width: "100%", boxSizing: "border-box" }}>
           <div style={S.logoMark}><PamusikaMark size={30} /></div>
           <h1 style={S.loginTitle}>Pamusika</h1>
           <div style={S.fieldWrap}>
