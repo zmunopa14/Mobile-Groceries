@@ -137,7 +137,11 @@ async function flushPending(biz) {
           p_customer: sale.customer || null, p_phone: sale.phone || null, p_sold_at: sale.soldAt || null,
         });
       } catch (e) {
-        // `p_sold_at` may not exist yet on older deployments — same call without it
+        // A genuine backdate that fails must stay queued, not silently get
+        // recorded dated "now" instead — same rule as the immediate-checkout
+        // path. Only sales with no requested date fall back to the older
+        // (pre-migration) call shape.
+        if (sale.soldAt) throw e;
         await sb.rpc("record_invoice", {
           p_items: sale.items, p_seller: sale.seller,
           p_customer: sale.customer || null, p_phone: sale.phone || null,
