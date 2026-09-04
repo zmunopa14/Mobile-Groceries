@@ -72,7 +72,11 @@ export const sb = {
       method: "DELETE",
       headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` },
     });
-    if (!r.ok) throw new Error("Delete failed");
+    if (!r.ok) {
+      let msg = "Delete failed";
+      try { msg = (await r.json()).message || msg; } catch {}
+      throw new Error(msg);
+    }
   },
   // Upload a file to the 'receipts' storage bucket, return its public URL
   async uploadReceipt(file) {
@@ -2284,7 +2288,15 @@ function StockManager({ products, onChange, businessId, cats = [], onCatsChange 
           </button>
         </Modal>
       )}
-      {editing && <EditProductModal product={editing} cats={CATS} onClose={() => setEditing(null)} onSave={saveEdit} onDelete={async () => { await remove(editing.id); setEditing(null); }} />}
+      {editing && <EditProductModal product={editing} cats={CATS} onClose={() => setEditing(null)} onSave={saveEdit}
+        onDelete={async () => {
+          try { await remove(editing.id); setEditing(null); }
+          catch (e) {
+            alert(e.message.toLowerCase().includes("foreign key") || e.message.toLowerCase().includes("violat")
+              ? "This product already has sales recorded against it, so it can't be deleted. Set its stock to 0 or rename it instead if you want to stop selling it."
+              : e.message);
+          }
+        }} />}
       {manageCats && <ManageCategories businessId={businessId} cats={CATS} onClose={() => setManageCats(false)} onChange={onCatsChange} />}
       {bulk && <BulkAddModal businessId={businessId} onClose={() => setBulk(false)} onDone={async () => { setBulk(false); await onChange(); }} />}
       {assigningSupplier && (
@@ -3127,7 +3139,11 @@ function CashUps({ businessId, sales = [] }) {
           );
         })}
       </div>
-      {editing && <EditCashUpModal report={editing} onClose={() => setEditing(null)} onSave={saveEdit} onDelete={async () => { await remove(editing.id); setEditing(null); }} />}
+      {editing && <EditCashUpModal report={editing} onClose={() => setEditing(null)} onSave={saveEdit}
+        onDelete={async () => {
+          try { await remove(editing.id); setEditing(null); }
+          catch (e) { alert(e.message); }
+        }} />}
     </>
   );
 }
