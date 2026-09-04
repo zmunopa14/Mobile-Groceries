@@ -1702,6 +1702,23 @@ function CloseDayModal({ sales, user, onClose, onSubmitted }) {
   const [reportedIds, setReportedIds] = useState(() => new Set()); // sale ids already covered by an earlier cash-up this day
   const [legacyCutoff, setLegacyCutoff] = useState(null); // fallback time-cutoff, only for cash-ups from before sale_ids existed
   const [priorCount, setPriorCount] = useState(0);    // how many cash-ups already done this day
+  const [balanceBroughtForward, setBalanceBroughtForward] = useState(0); // the actual cash counted last time, carried into this one
+
+  // The running float: whatever cash was actually counted at the last
+  // cash-up (any day, not just this one) is where this one starts from —
+  // same idea as a real cash book's "balance b/d". This is independent of
+  // which day is picked above; it's about real chronological order.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const rows = await sb.select("day_reports",
+          `business_id=eq.${user.business_id}&seller_name=eq.${encodeURIComponent(user.name)}&order=created_at.desc&limit=1`);
+        if (!cancelled) setBalanceBroughtForward(rows.length ? Number(rows[0].cash_in_hand || 0) : 0);
+      } catch { if (!cancelled) setBalanceBroughtForward(0); }
+    })();
+    return () => { cancelled = true; };
+  }, [user.business_id, user.name]);
 
   // When the chosen day changes, find every cash-up already submitted for
   // this seller+day and collect exactly which sales each one covered — a
@@ -1738,7 +1755,12 @@ function CloseDayModal({ sales, user, onClose, onSubmitted }) {
   );
   const salesTotal = dayInvoices.reduce((a, inv) => a + inv.total, 0);
   const expensesTotal = expenses.reduce((a, e) => a + Number(e.amount || 0), 0);
-  const expectedCash = salesTotal - expensesTotal;
+  // Balance b/d + sales − purchases/expenses = what SHOULD be in the till.
+  // Typing the actually-counted cash below doesn't change this figure — it's
+  // shown purely to guide, not to police — but whatever gets typed becomes
+  // the next cash-up's own balance b/d, since that's the real count that
+  // actually carries forward, not the theoretical one.
+  const expectedCash = balanceBroughtForward + salesTotal - expensesTotal;
   const cashNum = parseFloat(cash);
   const hasCash = cash !== "" && !isNaN(cashNum);
   const diff = hasCash ? cashNum - expectedCash : 0;
@@ -1751,7 +1773,10 @@ function CloseDayModal({ sales, user, onClose, onSubmitted }) {
         seller_name: user.name,
         report_date: day,
         sales_total: salesTotal,
-        cash_in_hand: hasCash ? cashNum : 0,
+        // Left blank, the float just carries forward unchanged rather than
+        // being wiped to 0 — an admin skipping the count shouldn't erase
+        // whatever cash genuinely is in the till.
+        cash_in_hand: hasCash ? cashNum : balanceBroughtForward,
         tx_count: dayInvoices.length,
         note: note.trim() || null,
         expenses: expenses,
@@ -1774,6 +1799,10 @@ function CloseDayModal({ sales, user, onClose, onSubmitted }) {
       <div style={{ ...S.fieldWrap }}>
         <span style={S.fieldLabel}>Day</span>
         <input style={S.input} type="date" value={day} max={todayStr} onChange={(e) => setDay(e.target.value)} />
+      </div>
+      <div style={S.cartTotalRow}>
+        <span>Balance b/d</span>
+        <span>{money(balanceBroughtForward)}</span>
       </div>
       {priorCount > 0 && (
         <p style={{ ...S.hint, color: mango, marginTop: 0 }}>
@@ -1807,7 +1836,7 @@ function CloseDayModal({ sales, user, onClose, onSubmitted }) {
 
       <SectionTitle>Cash</SectionTitle>
       <div style={S.cartTotalRow}>
-        <span>Expected cash (sales − spent)</span>
+        <span>Expected cash (balance b/d + sales − spent)</span>
         <span>{money(expectedCash)}</span>
       </div>
       <Field label="Actual cash in hand ($)" value={cash} onChange={setCash} type="number" placeholder="0.00" />
