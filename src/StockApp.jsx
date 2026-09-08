@@ -852,6 +852,11 @@ function useData(businessId) {
   const [error, setError] = useState("");
   const [online, setOnline] = useState(isOnline());
   const [pending, setPendingCount] = useState(getPending(businessId).length);
+  // When the real fetch below last actually succeeded — not just when a
+  // refresh was attempted — so the screen can tell you if you're looking
+  // at a stale cached snapshot instead of quietly showing old data as if
+  // it were current.
+  const [lastSynced, setLastSynced] = useState(null);
 
   const refresh = useCallback(async () => {
     // First, try to push up anything queued while offline
@@ -876,6 +881,7 @@ function useData(businessId) {
       store.set(cacheKey(businessId, "products"), p);
       store.set(cacheKey(businessId, "sales"), s);
       setOnline(true);
+      setLastSynced(new Date());
     } catch (e) {
       // Offline or server unreachable: keep showing cached data
       setOnline(false);
@@ -910,14 +916,14 @@ function useData(businessId) {
     };
   }, [refresh]);
 
-  return { products, sales, loading, error, refresh, online, pending, setPendingCount };
+  return { products, sales, loading, error, refresh, online, pending, setPendingCount, lastSynced };
 }
 
 // ============================================================
 // 5. ADMIN
 // ============================================================
 export function Admin({ user, onExit, businessName, onSell }) {
-  const { products, sales, loading, error, refresh } = useData(user.business_id);
+  const { products, sales, loading, error, refresh, lastSynced } = useData(user.business_id);
   const [tab, setTab] = useState("overview");
   const [cats, setCats] = useState([]);   // this business's category names
   const [hasIncomingOrders, setHasIncomingOrders] = useState(false);
@@ -1030,7 +1036,7 @@ export function Admin({ user, onExit, businessName, onSell }) {
         ["customers","Customers"],["compare","Compare"],["cashups","Cash-ups"],["report",reportTabLabel],["team","Team"],
         ...(isPlatformOwner ? [["approvals","Approvals"]] : []),
       ]}
-      onExit={onExit} onRefresh={refresh}
+      onExit={onExit} onRefresh={refresh} lastSynced={lastSynced}
       decoration={<LightWatermark />}
       alerts={alerts}
     >
@@ -1073,7 +1079,7 @@ export function Admin({ user, onExit, businessName, onSell }) {
 // 6. SELLER
 // ============================================================
 export function Seller({ user, onExit, businessName, sellMode }) {
-  const { products, sales, loading, error, refresh, online, pending, setPendingCount } = useData(user.business_id);
+  const { products, sales, loading, error, refresh, online, pending, setPendingCount, lastSynced } = useData(user.business_id);
   const [toast, setToast] = useState("");
   const [adding, setAdding] = useState(null);   // product being added to cart
   const cartKey = cacheKey(user.business_id, `cart:${user.name}`);
@@ -1202,7 +1208,7 @@ export function Seller({ user, onExit, businessName, sellMode }) {
   return (
     <div style={{ ...S.shell, ...(isDesktop ? { maxWidth: 980 } : {}) }}>
       <LightWatermark />
-      <Header title={user.name} sub={sellMode ? `${businessName} · Selling` : `${businessName} · Seller`} onExit={onExit} onRefresh={refresh} exitLabel={sellMode ? "Back to admin" : undefined} />
+      <Header title={user.name} sub={sellMode ? `${businessName} · Selling` : `${businessName} · Seller`} onExit={onExit} onRefresh={refresh} exitLabel={sellMode ? "Back to admin" : undefined} lastSynced={lastSynced} />
       {error && <div style={S.alert}><AlertTriangle size={16} /> {error}</div>}
       {!online && (
         <div style={{ ...S.alert, background: "#FFF1DA", color: "#B26A00" }}>
@@ -5571,12 +5577,37 @@ function MemberDetail({ member, businessId, onClose, onChanged, onRemoved }) {
 // ============================================================
 // 10. SHARED UI
 // ============================================================
-export function Header({ title, sub, onExit, onRefresh, exitLabel }) {
+// Ticks itself every 30s so "Updated Xm ago" stays accurate without the
+// parent screen needing to re-render for its own reasons. Turns amber once
+// it's been long enough that what's on screen might be a stale cached
+// snapshot rather than the real current data (see the duplicate-sale bug
+// this was added to prevent — a sale looked like it hadn't saved because
+// the screen was quietly showing an old snapshot).
+function LastSynced({ time }) {
+  const [, tick] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => tick((n) => n + 1), 30000);
+    return () => clearInterval(t);
+  }, []);
+  if (!time) return null;
+  const secs = Math.max(0, Math.floor((Date.now() - time.getTime()) / 1000));
+  const label = secs < 45 ? "Updated just now"
+    : secs < 3600 ? `Updated ${Math.max(1, Math.round(secs / 60))}m ago`
+    : `Updated ${Math.round(secs / 3600)}h ago`;
+  const stale = secs > 300;
+  return (
+    <div style={{ fontSize: 11, fontWeight: stale ? 700 : 500, color: stale ? "#B26A00" : muted, marginTop: 2 }}>
+      {label}{stale ? " — pull to refresh" : ""}
+    </div>
+  );
+}
+export function Header({ title, sub, onExit, onRefresh, exitLabel, lastSynced }) {
   return (
     <div style={S.header}>
       <div>
         <div style={S.headTitle}>{title}</div>
         <div style={S.headSub}>{sub}</div>
+        <LastSynced time={lastSynced} />
       </div>
       <div style={{ display: "flex", gap: 8 }}>
         {onRefresh && <button style={S.exitBtn} onClick={onRefresh}><RefreshCw size={15} /></button>}
@@ -5629,7 +5660,7 @@ export function useIsDesktop(breakpoint = 900) {
 // wide content pane on desktop. `decoration` is an optional absolutely-
 // positioned background layer (e.g. a watermark); `toolbar`/`alerts` render
 // between the header and the tab content on both layouts.
-export function AppShell({ title, subtitle, icon, tab, setTab, labels, keys, items, onExit, onRefresh, exitLabel, toolbar, alerts, decoration, children }) {
+export function AppShell({ title, subtitle, icon, tab, setTab, labels, keys, items, onExit, onRefresh, exitLabel, toolbar, alerts, decoration, children, lastSynced }) {
   const isDesktop = useIsDesktop();
   const tabItems = items || keys.map((k) => [k, labels[k]]);
 
@@ -5637,7 +5668,7 @@ export function AppShell({ title, subtitle, icon, tab, setTab, labels, keys, ite
     return (
       <div style={S.shell}>
         {decoration}
-        <Header title={title} sub={subtitle} onExit={onExit} onRefresh={onRefresh} exitLabel={exitLabel} />
+        <Header title={title} sub={subtitle} onExit={onExit} onRefresh={onRefresh} exitLabel={exitLabel} lastSynced={lastSynced} />
         {alerts}
         {toolbar && <div style={{ padding: "0 20px 10px", position: "relative", zIndex: 1 }}>{toolbar}</div>}
         <Tabs tab={tab} setTab={setTab} items={tabItems} />
@@ -5666,6 +5697,7 @@ export function AppShell({ title, subtitle, icon, tab, setTab, labels, keys, ite
         </nav>
         <div style={{ flex: 1 }} />
         <div style={S.deskSidebarFoot}>
+          <LastSynced time={lastSynced} />
           {onRefresh && <button style={S.deskFootBtn} onClick={onRefresh}><RefreshCw size={14} /> Refresh</button>}
           <button style={S.deskFootBtn} onClick={onExit}><LogOut size={14} /> {exitLabel || "Sign out"}</button>
         </div>
