@@ -393,6 +393,12 @@ function OwnerScreen({ user, businesses, onExit, onChange }) {
   const [payments, setPayments] = useState([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  // React state updates aren't synchronous, so a fast double-tap can fire
+  // this handler twice before the disabled button re-renders — this ref
+  // blocks the second call immediately, which a state check alone can't.
+  // (A duplicated approval means a duplicated receipt message and revenue
+  // credited twice, so this isn't just cosmetic.)
+  const busyRef = useRef(false);
 
   const load = useCallback(async () => {
     try { setPayments(await sb.select("payments", "order=created_at.desc&limit=200")); } catch {}
@@ -402,36 +408,39 @@ function OwnerScreen({ user, businesses, onExit, onChange }) {
 
   const bizName = (id) => (businesses.find((b) => b.id === id) || {}).name || `Business ${id}`;
   const approve = async (id) => {
-    setBusy(true);
+    if (busyRef.current) return;
+    busyRef.current = true; setBusy(true);
     try { await sb.rpc("approve_payment", { p_id: id }); await load(); onChange(); }
     catch (e) { alert(e.message); }
-    setBusy(false);
+    busyRef.current = false; setBusy(false);
   };
   const reject = async (id) => {
-    setBusy(true);
-    try { await sb.patch("payments", `id=eq.${id}`, { status: "rejected" }); await load(); }
+    if (busyRef.current) return;
+    busyRef.current = true; setBusy(true);
+    try { await sb.rpc("reject_payment", { p_id: id }); await load(); }
     catch (e) { alert(e.message); }
-    setBusy(false);
+    busyRef.current = false; setBusy(false);
   };
 
   const pending = payments.filter((p) => p.status === "pending");
   const pendingBiz = businesses.filter((b) => b.approved === false);
 
   const approveBiz = async (id) => {
-    setBusy(true);
-    try { await sb.patch("businesses", `id=eq.${id}`, { approved: true }); onChange(); }
+    if (busyRef.current) return;
+    busyRef.current = true; setBusy(true);
+    try { await sb.rpc("approve_pending_business", { p_id: id }); onChange(); }
     catch (e) { alert(e.message); }
-    setBusy(false);
+    busyRef.current = false; setBusy(false);
   };
   const rejectBiz = async (id) => {
     if (!window.confirm("Permanently remove this business and its account? This can't be undone.")) return;
-    setBusy(true);
+    if (busyRef.current) return;
+    busyRef.current = true; setBusy(true);
     try {
-      await sb.del("members", `business_id=eq.${id}`);
-      await sb.del("businesses", `id=eq.${id}`);
+      await sb.rpc("reject_pending_business", { p_id: id });
       onChange();
     } catch (e) { alert(e.message); }
-    setBusy(false);
+    busyRef.current = false; setBusy(false);
   };
 
   return (
@@ -508,6 +517,10 @@ function ApprovalsTab({ businessId, businessName }) {
   const [names, setNames] = useState({});
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  // Guards against a fast double-tap firing this twice before the disabled
+  // button re-renders — a duplicated approve here means a duplicated
+  // receipt message AND revenue credited twice, not just a UI hiccup.
+  const busyRef = useRef(false);
 
   const load = useCallback(async () => {
     try {
@@ -529,7 +542,8 @@ function ApprovalsTab({ businessId, businessName }) {
   useEffect(() => { load(); }, [load]);
 
   const approve = async (p) => {
-    setBusy(true);
+    if (busyRef.current) return;
+    busyRef.current = true; setBusy(true);
     try {
       await sb.rpc("approve_payment", { p_id: p.id });
       const payerName = names[p.business_id] || `Business ${p.business_id}`;
@@ -552,29 +566,31 @@ function ApprovalsTab({ businessId, businessName }) {
 
       await load();
     } catch (e) { alert(e.message); }
-    setBusy(false);
+    busyRef.current = false; setBusy(false);
   };
   const reject = async (id) => {
-    setBusy(true);
-    try { await sb.patch("payments", `id=eq.${id}`, { status: "rejected" }); await load(); }
+    if (busyRef.current) return;
+    busyRef.current = true; setBusy(true);
+    try { await sb.rpc("reject_payment", { p_id: id }); await load(); }
     catch (e) { alert(e.message); }
-    setBusy(false);
+    busyRef.current = false; setBusy(false);
   };
   const approveBiz = async (id) => {
-    setBusy(true);
-    try { await sb.patch("businesses", `id=eq.${id}`, { approved: true }); await load(); }
+    if (busyRef.current) return;
+    busyRef.current = true; setBusy(true);
+    try { await sb.rpc("approve_pending_business", { p_id: id }); await load(); }
     catch (e) { alert(e.message); }
-    setBusy(false);
+    busyRef.current = false; setBusy(false);
   };
   const rejectBiz = async (id) => {
     if (!window.confirm("Permanently remove this business and its account? This can't be undone.")) return;
-    setBusy(true);
+    if (busyRef.current) return;
+    busyRef.current = true; setBusy(true);
     try {
-      await sb.del("members", `business_id=eq.${id}`);
-      await sb.del("businesses", `id=eq.${id}`);
+      await sb.rpc("reject_pending_business", { p_id: id });
       await load();
     } catch (e) { alert(e.message); }
-    setBusy(false);
+    busyRef.current = false; setBusy(false);
   };
 
   if (loading) return <Loading />;
