@@ -2972,9 +2972,11 @@ function Transactions({ sales, products, businessId, onChange, onDeleteSale, cat
 // hand) but forgot to log some items can enter that true total here —
 // only the shortfall gets recorded, as one entry not tied to any specific
 // product, rather than forcing them to itemize sales they don't remember.
+// "To God" on a catch-up entry is always 3% — fixed, not a per-entry
+// choice, so there's one less field to fill in every time.
+const CATCHUP_TITHE_PCT = 3;
 function CatchUpSaleModal({ businessId, day, recordedTotal, defaultSeller, onClose, onAdded }) {
   const [actualTotal, setActualTotal] = useState("");
-  const [tithePct, setTithePct] = useState("");
   const [seller, setSeller] = useState(defaultSeller || "");
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
@@ -2993,7 +2995,7 @@ function CatchUpSaleModal({ businessId, day, recordedTotal, defaultSeller, onClo
     try {
       await sb.rpc("record_catchup_sale", {
         p_business_id: businessId, p_seller: seller.trim(), p_amount: shortfall,
-        p_tithe_pct: parseFloat(tithePct) || 0, p_note: note.trim() || null,
+        p_tithe_pct: CATCHUP_TITHE_PCT, p_note: note.trim() || null,
         p_sold_at: `${day}T${new Date().toTimeString().slice(0, 8)}`,
       });
       await onAdded();
