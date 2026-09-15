@@ -1065,7 +1065,7 @@ export function Admin({ user, onExit, businessName, onSell }) {
         {tab === "customers" && <Customers sales={sales} />}
         {tab === "compare" && <Compare sales={sales} />}
         {tab === "cashups" && <CashUps businessId={user.business_id} sales={sales} />}
-        {tab === "report" && <Report sales={sales} products={products} low={[...out, ...low]} cats={cats} businessId={user.business_id} businessName={businessName}
+        {tab === "report" && <Report products={products} low={[...out, ...low]} cats={cats} businessId={user.business_id} businessName={businessName}
           personName={user.name} weekStartDay={reportWeekday} onWeekStartDayChange={setReportWeekday} />}
         {tab === "team" && <TeamManager onChange={refresh} businessId={user.business_id} sales={sales} user={user} />}
         {tab === "approvals" && <ApprovalsTab businessId={user.business_id} businessName={businessName} />}
@@ -4711,7 +4711,7 @@ function Compare({ sales }) {
 
 const WEEKDAY_NAMES = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
 
-function Report({ sales, products, low, cats = [], businessId, businessName, personName, weekStartDay = 2, onWeekStartDayChange }) {
+function Report({ products, low, cats = [], businessId, businessName, personName, weekStartDay = 2, onWeekStartDayChange }) {
   // The week runs from whichever day is chosen (default Tuesday) to the day
   // before it, next week. Let the admin step back through weeks, or switch
   // to picking an exact date range instead — not everyone reports weekly.
@@ -4812,11 +4812,36 @@ function Report({ sales, products, low, cats = [], businessId, businessName, per
   }, [businessId, startStr, endStr]);
   useEffect(() => { loadResale(); }, [loadResale]);
 
+  // The rest of the app only keeps the newest ~4000 sales in memory (to
+  // keep phone data usage low), which quietly drops older rows once a
+  // business is busy enough — a past week could look empty even though
+  // the sales are really there. The report fetches exactly the range
+  // it's showing straight from the database instead, so paging back to
+  // any past week always works no matter how much has been sold since.
+  const [weekSales, setWeekSales] = useState([]);
+  const loadWeekSales = useCallback(async () => {
+    if (!businessId) return;
+    try {
+      // A day of padding on each side absorbs any timezone rounding at the
+      // edges — inWeek below re-filters precisely by local calendar date.
+      const padStart = new Date(startStr + "T00:00:00"); padStart.setDate(padStart.getDate() - 1);
+      const padEnd = new Date(endStr + "T00:00:00"); padEnd.setDate(padEnd.getDate() + 2);
+      const rows = await sb.select("sales",
+        `business_id=eq.${businessId}&sold_at=gte.${padStart.toISOString()}&sold_at=lt.${padEnd.toISOString()}&order=sold_at.asc&limit=20000`);
+      setWeekSales(rows);
+    } catch {} // offline or unreachable — keep showing whatever loaded last
+  }, [businessId, startStr, endStr]);
+  useEffect(() => {
+    loadWeekSales();
+    const t = setInterval(loadWeekSales, 60000);
+    return () => clearInterval(t);
+  }, [loadWeekSales]);
+
   const inWeek = (s) => {
     const d = localDateStr(new Date(s.sold_at));
     return d >= startStr && d <= endStr;
   };
-  const weekRows = sales.filter(inWeek);                 // all categories, this week
+  const weekRows = weekSales.filter(inWeek);              // all categories, this week
   const inCat = (s) => cat === "All" || (catOf[s.product_name] || "Uncategorised") === cat;
   const rows = weekRows.filter(inCat);                   // selected category
 
