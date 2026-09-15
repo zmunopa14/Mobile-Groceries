@@ -721,7 +721,18 @@ function SignInScreen({ onLogin, onRegister }) {
       const bizRows = await sb.rpc("find_business", { p_name: bizInput.trim() });
       if (!bizRows || !bizRows.length) { setErr("We couldn't find that business name. Check the spelling."); setBusy(false); return; }
       const rows = await sb.rpc("login_in_business", { p_name: name.trim(), p_pin: pin, p_business_id: bizRows[0].id });
-      if (rows && rows.length) { onLogin(rows[0]); return; }
+      if (rows && rows.length) {
+        let loggedInUser = rows[0];
+        // Fetched directly rather than trusting login_in_business to return
+        // it — that RPC predates this column, so relying on its own SELECT
+        // list silently loses the flag if it was never updated to include it.
+        try {
+          const ex = await sb.select("members", `id=eq.${loggedInUser.id}&select=exempt`);
+          if (ex && ex.length) loggedInUser = { ...loggedInUser, exempt: !!ex[0].exempt };
+        } catch {}
+        onLogin(loggedInUser);
+        return;
+      }
       setErr("Name or PIN is incorrect for this business.");
     } catch (e) { setErr(e.message); }
     setBusy(false);
