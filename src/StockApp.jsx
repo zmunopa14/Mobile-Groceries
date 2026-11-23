@@ -16,10 +16,30 @@ const SUPABASE_URL =
 const SUPABASE_ANON_KEY =
   import.meta.env.VITE_SUPABASE_ANON_KEY || "YOUR-ANON-KEY";
 
+// On a weak mobile signal a plain fetch() can just hang indefinitely — no
+// error, no timeout, nothing for the app's existing offline/retry handling
+// to react to, which is exactly what "spinner never finishes, only works
+// on wifi" looks like. This bounds every request to 15s and turns a stall
+// into a TypeError, so it's treated the same as a genuine network failure
+// everywhere that already checks `e instanceof TypeError`.
+const FETCH_TIMEOUT_MS = 15000;
+async function fetchWithTimeout(url, options = {}, timeoutMs = FETCH_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } catch (e) {
+    if (e.name === "AbortError") throw new TypeError("Request timed out — check your connection and try again");
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // Tiny REST client (no SDK needed — works inside an artifact)
 export const sb = {
   async rpc(fn, args) {
-    const r = await fetch(`${SUPABASE_URL}/rest/v1/rpc/${fn}`, {
+    const r = await fetchWithTimeout(`${SUPABASE_URL}/rest/v1/rpc/${fn}`, {
       method: "POST",
       headers: {
         apikey: SUPABASE_ANON_KEY,
@@ -37,14 +57,14 @@ export const sb = {
     return text ? JSON.parse(text) : null;
   },
   async select(table, query = "") {
-    const r = await fetch(`${SUPABASE_URL}/rest/v1/${table}?${query}`, {
+    const r = await fetchWithTimeout(`${SUPABASE_URL}/rest/v1/${table}?${query}`, {
       headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` },
     });
     if (!r.ok) throw new Error("Could not load " + table);
     return r.json();
   },
   async insert(table, row) {
-    const r = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
+    const r = await fetchWithTimeout(`${SUPABASE_URL}/rest/v1/${table}`, {
       method: "POST",
       headers: {
         apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
@@ -56,7 +76,7 @@ export const sb = {
     return r.json();
   },
   async patch(table, query, row) {
-    const r = await fetch(`${SUPABASE_URL}/rest/v1/${table}?${query}`, {
+    const r = await fetchWithTimeout(`${SUPABASE_URL}/rest/v1/${table}?${query}`, {
       method: "PATCH",
       headers: {
         apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
@@ -68,7 +88,7 @@ export const sb = {
     return r.json();
   },
   async del(table, query) {
-    const r = await fetch(`${SUPABASE_URL}/rest/v1/${table}?${query}`, {
+    const r = await fetchWithTimeout(`${SUPABASE_URL}/rest/v1/${table}?${query}`, {
       method: "DELETE",
       headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` },
     });
@@ -82,14 +102,16 @@ export const sb = {
   async uploadReceipt(file) {
     const ext = (file.name && file.name.split(".").pop()) || "jpg";
     const path = `receipt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
-    const r = await fetch(`${SUPABASE_URL}/storage/v1/object/receipts/${path}`, {
+    // A real photo upload over slow mobile data legitimately takes longer
+    // than a normal API call — give it more room before giving up.
+    const r = await fetchWithTimeout(`${SUPABASE_URL}/storage/v1/object/receipts/${path}`, {
       method: "POST",
       headers: {
         apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
         "Content-Type": file.type || "image/jpeg",
       },
       body: file,
-    });
+    }, 60000);
     if (!r.ok) throw new Error("Photo upload failed");
     return `${SUPABASE_URL}/storage/v1/object/public/receipts/${path}`;
   },
