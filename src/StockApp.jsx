@@ -738,15 +738,18 @@ function SignInScreen({ onLogin, onRegister }) {
       if (!bizRows || !bizRows.length) { setErr("We couldn't find that business name. Check the spelling."); setBusy(false); return; }
       const rows = await sb.rpc("login_in_business", { p_name: name.trim(), p_pin: pin, p_business_id: bizRows[0].id });
       if (rows && rows.length) {
-        let loggedInUser = rows[0];
-        // Fetched directly rather than trusting login_in_business to return
-        // it — that RPC predates this column, so relying on its own SELECT
-        // list silently loses the flag if it was never updated to include it.
-        try {
-          const ex = await sb.select("members", `id=eq.${loggedInUser.id}&select=exempt`);
-          if (ex && ex.length) loggedInUser = { ...loggedInUser, exempt: !!ex[0].exempt };
-        } catch {}
+        const loggedInUser = rows[0];
+        // Sign in right away rather than waiting on this — a third
+        // sequential round trip here was adding real delay to every single
+        // login, for a flag that's false for almost everyone. Fetched
+        // directly (rather than trusting login_in_business to return it —
+        // that RPC predates this column) and patched in a moment later for
+        // the rare exempt account; nothing else depends on it being there
+        // at the very first render.
         onLogin(loggedInUser);
+        sb.select("members", `id=eq.${loggedInUser.id}&select=exempt`)
+          .then((ex) => { if (ex && ex.length && ex[0].exempt) onLogin({ ...loggedInUser, exempt: true }); })
+          .catch(() => {});
         return;
       }
       setErr("Name or PIN is incorrect for this business.");
@@ -921,6 +924,22 @@ function useData(businessId) {
     setLoading(false);
   }, [businessId]);
 
+  // A product add/edit/restock doesn't need the sales history reloaded too
+  // (up to 4000 rows, the slow part on a bad connection) — this refetches
+  // just the product list, so Stock feels instant even mid-rush, instead
+  // of every single product change paying for a full reload.
+  const refreshProducts = useCallback(async () => {
+    try {
+      const p = await sb.select("products", `business_id=eq.${businessId}&order=created_at.asc`);
+      setProducts(p);
+      store.set(cacheKey(businessId, "products"), p);
+      setOnline(true);
+      setLastSynced(new Date());
+    } catch {
+      setOnline(false);
+    }
+  }, [businessId]);
+
   useEffect(() => {
     refresh();
     // LOW-DATA: refresh once a minute (was every 8s), and only while the app is
@@ -943,14 +962,14 @@ function useData(businessId) {
     };
   }, [refresh]);
 
-  return { products, sales, loading, error, refresh, online, pending, setPendingCount, lastSynced };
+  return { products, sales, loading, error, refresh, refreshProducts, online, pending, setPendingCount, lastSynced };
 }
 
 // ============================================================
 // 5. ADMIN
 // ============================================================
 export function Admin({ user, onExit, businessName, onSell }) {
-  const { products, sales, loading, error, refresh, lastSynced } = useData(user.business_id);
+  const { products, sales, loading, error, refresh, refreshProducts, lastSynced } = useData(user.business_id);
   const [tab, setTab] = useState("overview");
   const [cats, setCats] = useState([]);   // this business's category names
   const [hasIncomingOrders, setHasIncomingOrders] = useState(false);
@@ -1084,7 +1103,7 @@ export function Admin({ user, onExit, businessName, onSell }) {
           <p style={S.hint}>Tap the ✕ to remove a sale — its stock is returned automatically.</p>
           <SalesList sales={todaySales.slice(0,30)} showSeller onDelete={deleteSale} showTithe />
         </>}
-        {tab === "stock" && <StockManager products={products} onChange={refresh} businessId={user.business_id} cats={cats} onCatsChange={loadCats} />}
+        {tab === "stock" && <StockManager products={products} onChange={refreshProducts} businessId={user.business_id} cats={cats} onCatsChange={loadCats} />}
         {tab === "transactions" && <Transactions sales={sales} products={products} businessId={user.business_id} onChange={refresh} onDeleteSale={deleteSale} cats={cats} user={user} />}
         {tab === "order" && <OrderList products={products} sales={sales} businessName={businessName} businessId={user.business_id} />}
         {tab === "supplierOrders" && <OrdersInbox businessId={user.business_id} />}
