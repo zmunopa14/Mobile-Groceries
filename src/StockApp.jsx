@@ -1181,6 +1181,17 @@ export function Seller({ user, onExit, businessName, sellMode }) {
     setToast("Added to cart");
     setTimeout(() => setToast(""), 1200);
   };
+  // Sets the exact quantity rather than adding on top — used for correcting
+  // to something other than a plain +1 (e.g. 3 packs, or half a pack).
+  const setCartQty = (product, units) => {
+    setCart((prev) => {
+      if (units <= 0) return prev.filter((c) => c.product.id !== product.id);
+      const existing = prev.find((c) => c.product.id === product.id);
+      if (existing) return prev.map((c) => c.product.id === product.id ? { ...c, units } : c);
+      return [...prev, { product, units }];
+    });
+    setAdding(null);
+  };
   const removeFromCart = (id) => setCart((prev) => prev.filter((c) => c.product.id !== id));
 
   // Keep the basket saved on this phone so an accidental logout doesn't lose it
@@ -1306,7 +1317,7 @@ export function Seller({ user, onExit, businessName, sellMode }) {
             <FileText size={17} /> Close day &amp; submit cash-up
           </button>
           <SectionTitle>New sale</SectionTitle>
-          <p style={S.hint}>Tap items to add to the basket, then check out as one receipt.</p>
+          <p style={S.hint}>Tap "+ Add" to add one — tap again for another. Tap the name to set an exact amount (3 packs, half a pack, etc).</p>
           <SearchBar value={search} onChange={setSearch} />
           <div className="pk-shopgrid">
             {products.length === 0 && <p style={S.empty}>No products yet. Ask the admin to add stock.</p>}
@@ -1317,13 +1328,14 @@ export function Seller({ user, onExit, businessName, sellMode }) {
               return (
                 <div key={p.id} style={{ ...S.card, ...S.cardPop, ...(inCart ? S.cardInCart : {}) }}>
                   <div style={{ fontSize: 22, marginRight: 4 }}>{emojiFor(p.name)}</div>
-                  <div style={{ flex: 1 }}>
+                  <button onClick={() => setAdding(p)}
+                    style={{ flex: 1, background: "none", border: "none", padding: 0, margin: 0, textAlign: "left", cursor: "pointer", color: "inherit" }}>
                     <div style={S.cardName}>{p.name}{inCart && <span style={S.cartBadge}>{inCart.units} in basket</span>}</div>
                     <div style={S.cardMeta}>
                       {priceFmt(p.price)}/pack · {low ? <span style={{ color: "#C0392B", fontWeight: 600 }}>out of stock</span> : stockLabel(p)}
                     </div>
-                  </div>
-                  <button style={S.sellBtn} onClick={() => setAdding(p)}>+ Add</button>
+                  </button>
+                  <button style={S.sellBtn} onClick={() => addToCart(p, 1)}>+ Add</button>
                 </div>
               );
             })}
@@ -1348,7 +1360,10 @@ export function Seller({ user, onExit, businessName, sellMode }) {
         </button>
       )}
 
-      {adding && <AddToCartModal product={adding} onClose={() => setAdding(null)} onAdd={addToCart} />}
+      {adding && (
+        <AddToCartModal product={adding} onClose={() => setAdding(null)} onAdd={setCartQty}
+          initialUnits={(cart.find((c) => c.product.id === adding.id) || {}).units} />
+      )}
       {showCart && (
         <CartModal cart={cart} total={cartTotal} customers={customerHistory(sales)} onClose={() => setShowCart(false)}
           onRemove={removeFromCart} onCheckout={checkout} />
@@ -1365,16 +1380,20 @@ export function Seller({ user, onExit, businessName, sellMode }) {
   );
 }
 
-// Add-to-cart modal: packs only
-function AddToCartModal({ product, onClose, onAdd }) {
-  const [packs, setPacks] = useState("");
+// Sets the exact quantity for a product in the basket — reached by tapping
+// a product's name (the "+ Add" button itself just adds one directly,
+// without opening this). Pre-filled with what's already in the basket, if
+// anything, so this doubles as "edit the amount" rather than only "add".
+function AddToCartModal({ product, onClose, onAdd, initialUnits }) {
+  const editing = initialUnits != null;
+  const [packs, setPacks] = useState(editing ? String(initialUnits) : "");
   const [warned, setWarned] = useState(false);
   const totalPacks = parseFloat(packs) || 0;
   const totalPrice = totalPacks * Number(product.price);
   const oversell = totalPacks > product.qty;
 
   const handleAdd = () => {
-    if (totalPacks <= 0) return;
+    if (totalPacks <= 0 && !editing) return; // 0 only makes sense as "remove" when already in the basket
     if (oversell && !warned) { setWarned(true); return; }
     onAdd(product, totalPacks);
   };
@@ -1395,8 +1414,8 @@ function AddToCartModal({ product, onClose, onAdd }) {
         </p>
       )}
       <button style={{ ...S.btn, ...(oversell && warned ? S.btnWarn : S.btnDark), width: "100%", marginTop: 8 }}
-        disabled={totalPacks <= 0} onClick={handleAdd}>
-        <Plus size={18} /> {oversell && warned ? "Confirm & add anyway" : "Add to basket"}
+        disabled={totalPacks <= 0 && !editing} onClick={handleAdd}>
+        <Plus size={18} /> {oversell && warned ? "Confirm & add anyway" : totalPacks <= 0 ? "Remove from basket" : editing ? "Update basket" : "Add to basket"}
       </button>
     </Modal>
   );
