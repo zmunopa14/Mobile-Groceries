@@ -657,6 +657,83 @@ function ApprovalsTab({ businessId, businessName }) {
   );
 }
 
+// What used to be written by hand in a notebook: items a third party (e.g.
+// Snackify) procured on this business's behalf, what it actually cost, and
+// the receipt — reported in automatically via the Snackify API once an
+// order is bought, landing here as something to settle.
+function BillsTab({ businessId }) {
+  const [bills, setBills] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const busyRef = useRef(false);
+
+  const load = useCallback(async () => {
+    try { setBills(await sb.select("procurement_bills", `business_id=eq.${businessId}&order=created_at.desc&limit=200`)); }
+    catch {}
+    setLoading(false);
+  }, [businessId]);
+  useEffect(() => { load(); }, [load]);
+
+  const markPaid = async (id) => {
+    if (busyRef.current) return;
+    busyRef.current = true; setBusy(true);
+    try { await sb.patch("procurement_bills", `id=eq.${id}`, { status: "paid", paid_at: new Date().toISOString() }); await load(); }
+    catch (e) { alert(e.message); }
+    busyRef.current = false; setBusy(false);
+  };
+
+  if (loading) return <Loading />;
+  const unpaid = bills.filter((b) => b.status === "unpaid");
+  const paid = bills.filter((b) => b.status === "paid");
+
+  return (
+    <>
+      <SectionTitle>Bills to settle</SectionTitle>
+      <p style={S.hint}>Items procured on your behalf (e.g. via Snackify) — the actual cost and receipt land here once bought.</p>
+      {unpaid.length === 0 && <p style={S.empty}>Nothing owing right now.</p>}
+      <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 20 }}>
+        {unpaid.map((b) => (
+          <div key={b.id} style={{ ...S.card, flexDirection: "column", alignItems: "stretch", gap: 8 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <div style={{ flex: 1 }}>
+                <div style={S.cardName}>{money(b.amount)}</div>
+                <div style={S.cardMeta}>{new Date(b.created_at).toLocaleDateString()}</div>
+              </div>
+              {b.receipt_url && (
+                <a href={b.receipt_url} target="_blank" rel="noreferrer" style={{ ...S.btn, ...S.btnGhost, padding: "7px 12px", fontSize: 12.5, textDecoration: "none" }}>
+                  Receipt
+                </a>
+              )}
+            </div>
+            <button style={{ ...S.btn, ...S.btnDark, width: "100%" }} disabled={busy} onClick={() => markPaid(b.id)}>
+              <Check size={16} /> Mark as paid
+            </button>
+          </div>
+        ))}
+      </div>
+
+      {paid.length > 0 && <>
+        <SectionTitle>Settled</SectionTitle>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {paid.map((b) => (
+            <div key={b.id} style={S.card}>
+              <div style={{ flex: 1 }}>
+                <div style={S.cardName}>{money(b.amount)}</div>
+                <div style={S.cardMeta}>Paid {b.paid_at ? new Date(b.paid_at).toLocaleDateString() : ""}</div>
+              </div>
+              {b.receipt_url && (
+                <a href={b.receipt_url} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: accent, fontWeight: 700, textDecoration: "none" }}>
+                  Receipt
+                </a>
+              )}
+            </div>
+          ))}
+        </div>
+      </>}
+    </>
+  );
+}
+
 const WEEKLY_PRICE = 2;                 // US$ per week — change here if needed
 const ECOCASH_NUMBER = "+263 78 734 8881";
 
@@ -1045,6 +1122,20 @@ export function Admin({ user, onExit, businessName, onSell }) {
     return () => { cancelled = true; };
   }, [user.business_id]);
 
+  // Only shown once something's actually been procured on this business's
+  // behalf (e.g. via Snackify) — most businesses never see this tab.
+  const [hasBills, setHasBills] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const rows = await sb.select("procurement_bills", `business_id=eq.${user.business_id}&select=id&limit=1`);
+        if (!cancelled) setHasBills(rows.length > 0);
+      } catch { /* table may not exist yet on older deployments — fail quiet */ }
+    })();
+    return () => { cancelled = true; };
+  }, [user.business_id]);
+
   const totalSales = sales.reduce((a, x) => a + Number(x.total), 0);
   const totalTithe = sales.reduce((a, x) => a + Number(x.tithe), 0);
   const cash = totalSales - totalTithe;
@@ -1100,6 +1191,7 @@ export function Admin({ user, onExit, businessName, onSell }) {
       items={[
         ["overview","Overview"],["stock","Stock"],["transactions","Sales"],["order","Order"],
         ...(hasIncomingOrders ? [["supplierOrders","Orders"]] : []),
+        ...(hasBills ? [["bills","Bills"]] : []),
         ["community","Community"],
         ["customers","Customers"],["compare","Compare"],["cashups","Cash-ups"],["report",reportTabLabel],["team","Team"],
         ...(isPlatformOwner ? [["approvals","Approvals"]] : []),
@@ -1137,6 +1229,7 @@ export function Admin({ user, onExit, businessName, onSell }) {
           personName={user.name} weekStartDay={reportWeekday} onWeekStartDayChange={setReportWeekday} />}
         {tab === "team" && <TeamManager onChange={refresh} businessId={user.business_id} sales={sales} user={user} />}
         {tab === "approvals" && <ApprovalsTab businessId={user.business_id} businessName={businessName} />}
+        {tab === "bills" && <BillsTab businessId={user.business_id} />}
       </>}
     </AppShell>
     </>
@@ -3823,9 +3916,13 @@ function SupplierLinkModal({ businessId, link, onClose, onSaved }) {
 // sending, and as the only source of the message text for a free-text
 // (not-yet-registered) supplier, since that path never inserts an
 // order_requests row for the server to compose it for.
+function orderLineText(it) {
+  const price = Number(it.recommended_price) > 0 ? ` (wants ~${money(it.recommended_price)} each)` : "";
+  return `- ${it.qty} ${it.unit || "unit(s)"} of ${it.product_name}${price}`;
+}
 function composeOrderMessage(requesterName, items, note) {
   let msg = `Order request from ${requesterName || "a reseller"}:\n`;
-  items.forEach((it) => { msg += `- ${it.qty} ${it.unit || "unit(s)"} of ${it.product_name}\n`; });
+  items.forEach((it) => { msg += `${orderLineText(it)}\n`; });
   if (note && note.trim()) msg += `\nNote: ${note.trim()}`;
   return msg.trim();
 }
@@ -3833,7 +3930,7 @@ function composeOrderMessage(requesterName, items, note) {
 // Legacy fallback for an order_requests row saved before the `message`
 // column existed — reconstructs a readable line list from its raw items.
 function legacyOrderText(o) {
-  return (o.items || []).map((it) => `- ${it.qty} ${it.unit || "unit(s)"} of ${it.product_name}`).join("\n");
+  return (o.items || []).map(orderLineText).join("\n");
 }
 
 // Powers the floating "new messages" button, visible from any tab — counts
@@ -4113,14 +4210,21 @@ function SupplierThreadModal({ businessId, businessName, link, supplierName, ite
 // businessId/supplierBusinessId); `onSentWhatsapp` fires after the WhatsApp
 // hand-off for a free-text supplier, since nothing is persisted there.
 function OrderComposer({ businessName, supplierBusinessId, supplierPhone, supplierName, items, onSend, onCancel, onSentWhatsapp }) {
-  const [lines, setLines] = useState(items.map((it) => ({ product_name: it.p.name, qty: it.propose, unit: it.box > 1 ? `box of ${it.box}` : "unit" })));
+  const [lines, setLines] = useState(items.map((it) => ({ product_name: it.p.name, qty: it.propose, unit: it.box > 1 ? `box of ${it.box}` : "unit", recommended_price: "" })));
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
 
   const setQty = (i, v) => setLines((prev) => prev.map((l, j) => j === i ? { ...l, qty: Math.max(0, parseInt(v) || 0) } : l));
+  // What this business expects/wants the wholesale price to be — purely
+  // informational for whoever's procuring (e.g. Snackify), never enforced.
+  const setRecPrice = (i, v) => setLines((prev) => prev.map((l, j) => j === i ? { ...l, recommended_price: v.replace(/[^0-9.]/g, "") } : l));
   const removeLine = (i) => setLines((prev) => prev.filter((_, j) => j !== i));
-  const payload = lines.filter((l) => l.qty > 0);
+  const payload = lines.filter((l) => l.qty > 0).map((l) => {
+    const { recommended_price, ...rest } = l;
+    const n = parseFloat(recommended_price);
+    return n > 0 ? { ...rest, recommended_price: n } : rest;
+  });
   const preview = payload.length ? composeOrderMessage(businessName, payload, note) : "";
 
   const sendInApp = async () => {
@@ -4151,9 +4255,12 @@ function OrderComposer({ businessName, supplierBusinessId, supplierPhone, suppli
             </div>
             <input style={{ ...S.input, width: 64, textAlign: "center" }} type="number" value={l.qty}
               onChange={(e) => setQty(i, e.target.value)} />
+            <input style={{ ...S.input, width: 72, textAlign: "center" }} inputMode="decimal" placeholder="price"
+              value={l.recommended_price} onChange={(e) => setRecPrice(i, e.target.value)} />
             <button style={S.delBtn} onClick={() => removeLine(i)}><X size={16} /></button>
           </div>
         ))}
+        {lines.length > 0 && <p style={{ ...S.hint, marginTop: -4 }}>The "price" box is optional — what you'd want to pay per unit, as a guide for whoever buys it.</p>}
         {lines.length === 0 && <p style={S.empty}>Nothing left to order.</p>}
       </div>
       <Field label="Note (optional)" value={note} onChange={setNote} placeholder="e.g. deliver Friday please" />
